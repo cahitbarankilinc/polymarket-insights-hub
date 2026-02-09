@@ -1,13 +1,35 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from 'react';
+import { DashboardProvider } from '@/context/DashboardContext';
+import DashboardHeader from '@/components/dashboard/DashboardHeader';
+import AddAddressTab from '@/components/dashboard/AddAddressTab';
+import TrackingTab from '@/components/dashboard/TrackingTab';
+import PaperTradeTab from '@/components/dashboard/PaperTradeTab';
+import RealTradeTab from '@/components/dashboard/RealTradeTab';
 
 const Index = () => {
+  const [activeTab, setActiveTab] = useState(0);
+  const [paperTradeId, setPaperTradeId] = useState<string | null>(null);
+
+  const handlePaperTrade = (addressId: string) => {
+    setPaperTradeId(addressId);
+    setActiveTab(2);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <DashboardProvider>
+      <div className="min-h-screen bg-background">
+        <DashboardHeader activeTab={activeTab} onTabChange={(tab) => {
+          setActiveTab(tab);
+          if (tab !== 2) setPaperTradeId(null);
+        }} />
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+          {activeTab === 0 && <AddAddressTab />}
+          {activeTab === 1 && <TrackingTab onPaperTrade={handlePaperTrade} />}
+          {activeTab === 2 && <PaperTradeTab preselectedId={paperTradeId} />}
+          {activeTab === 3 && <RealTradeTab />}
+        </main>
       </div>
-    </div>
+    </DashboardProvider>
   );
 };
 
