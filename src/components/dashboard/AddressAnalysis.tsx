@@ -1,6 +1,8 @@
-import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, Wallet, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { TrackedAddress } from '@/context/DashboardContext';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { getWalletEvents, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
 
 // Mock data
 const generateChartData = () => {
@@ -19,15 +21,6 @@ const generateChartData = () => {
   return data;
 };
 
-const mockActivities = [
-  { type: 'in', amount: 2.45, time: '2 saat önce', hash: '0x3f2a...8b1c' },
-  { type: 'out', amount: 0.12, time: '5 saat önce', hash: '0x7d1e...4a2f' },
-  { type: 'in', amount: 5.80, time: '1 gün önce', hash: '0xab34...9e7d' },
-  { type: 'out', amount: 1.23, time: '2 gün önce', hash: '0xc8f2...3b5a' },
-  { type: 'in', amount: 0.55, time: '3 gün önce', hash: '0x1e9a...6c4f' },
-  { type: 'out', amount: 3.10, time: '4 gün önce', hash: '0xd4b7...2e8c' },
-];
-
 const chartData = generateChartData();
 
 interface Props {
@@ -35,11 +28,92 @@ interface Props {
   onBack: () => void;
 }
 
+const berlinDateFormat = new Intl.DateTimeFormat('de-DE', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
+const toNumber = (value: unknown): number => {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+};
+
+const toDateFromSeen = (seenAt: string) => {
+  const parsed = new Date(seenAt);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatBerlin = (seenAt: string) => {
+  const parsed = toDateFromSeen(seenAt);
+  if (!parsed) return '-';
+  return berlinDateFormat.format(parsed);
+};
+
+const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 6 })}`;
+
 export default function AddressAnalysis({ address, onBack }: Props) {
   const totalBalance = chartData[chartData.length - 1].balance;
   const prevBalance = chartData[chartData.length - 2].balance;
   const change = ((totalBalance - prevBalance) / prevBalance) * 100;
   const isPositive = change > 0;
+
+  const [events, setEvents] = useState<WalletTrackerEvent[]>([]);
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
+      try {
+        const payload = await getWalletEvents(address.address);
+        if (!active) return;
+        setEvents(payload);
+      } catch {
+        if (!active) return;
+        setEvents([]);
+      }
+    };
+
+    load();
+    const intervalId = setInterval(load, 5000);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
+  }, [address.address]);
+
+  const latest30 = useMemo(() => events.slice(0, 30), [events]);
+
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const last24HoursMs = 24 * 60 * 60 * 1000;
+
+    const total = events.length;
+    const last24h = events.filter((event) => {
+      const seen = toDateFromSeen(event.seen_at_utc);
+      if (!seen) return false;
+      return now - seen.getTime() <= last24HoursMs;
+    }).length;
+
+    const incoming = events
+      .filter((event) => (event.side ?? '').toUpperCase() === 'BUY')
+      .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
+
+    const outgoing = events
+      .filter((event) => (event.side ?? '').toUpperCase() === 'SELL')
+      .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
+
+    return { total, last24h, incoming, outgoing };
+  }, [events]);
 
   return (
     <div className="animate-slide-up">
@@ -76,10 +150,10 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         {[
-          { label: 'Toplam İşlem', value: '247', icon: Activity },
-          { label: 'Son 24s', value: '12', icon: Clock },
-          { label: 'Gelen', value: '₿ 45.2', icon: ArrowDownRight, color: 'text-accent' },
-          { label: 'Giden', value: '₿ 38.7', icon: ArrowUpRight, color: 'text-warning' },
+          { label: 'Toplam İşlem', value: String(stats.total), icon: Activity },
+          { label: 'Son 24s', value: String(stats.last24h), icon: Clock },
+          { label: 'Gelen', value: formatUsd(stats.incoming), icon: ArrowDownRight, color: 'text-accent' },
+          { label: 'Giden', value: formatUsd(stats.outgoing), icon: ArrowUpRight, color: 'text-warning' },
         ].map((stat, i) => (
           <div key={i} className="stat-card">
             <div className="flex items-center gap-2 mb-2">
@@ -146,32 +220,43 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       <div className="glass-card p-4">
         <h3 className="text-sm font-semibold text-foreground mb-3">Son Aktiviteler</h3>
         <div className="space-y-2">
-          {mockActivities.map((act, i) => (
-            <div key={i} className="flex items-center justify-between py-2 border-b border-border/30 last:border-0">
-              <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                  act.type === 'in' ? 'bg-accent/10' : 'bg-warning/10'
-                }`}>
-                  {act.type === 'in'
-                    ? <ArrowDownRight className="w-4 h-4 text-accent" />
-                    : <ArrowUpRight className="w-4 h-4 text-warning" />
-                  }
+          {latest30.map((event, i) => {
+            const side = (event.side ?? '').toUpperCase();
+            const isBuy = side === 'BUY';
+            const isSell = side === 'SELL';
+
+            return (
+              <div key={`${event.tx_hash ?? i}-${event.seen_at_utc}-${i}`} className="flex items-center justify-between py-2 border-b border-border/30 last:border-0">
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                    isBuy ? 'bg-accent/10' : isSell ? 'bg-warning/10' : 'bg-secondary/30'
+                  }`}>
+                    {isBuy
+                      ? <ArrowDownRight className="w-4 h-4 text-accent" />
+                      : <ArrowUpRight className={`w-4 h-4 ${isSell ? 'text-warning' : 'text-muted-foreground'}`} />
+                    }
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      {event.market ?? '-'}
+                    </p>
+                    <p className="font-mono text-[10px] text-muted-foreground">{event.outcome ?? '-'}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">
-                    {act.type === 'in' ? 'Gelen' : 'Giden'} Transfer
+                <div className="text-right">
+                  <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
+                    P: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}S: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}V: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
                   </p>
-                  <p className="font-mono text-[10px] text-muted-foreground">{act.hash}</p>
+                  <p className="text-[10px] text-muted-foreground">{formatBerlin(event.seen_at_utc)}</p>
                 </div>
               </div>
-              <div className="text-right">
-                <p className={`text-sm font-semibold ${act.type === 'in' ? 'text-accent' : 'text-warning'}`}>
-                  {act.type === 'in' ? '+' : '-'}{act.amount} BTC
-                </p>
-                <p className="text-[10px] text-muted-foreground">{act.time}</p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+          {latest30.length === 0 && (
+            <div className="py-4 text-sm text-muted-foreground text-center">Henüz takip verisi yok</div>
+          )}
         </div>
       </div>
     </div>

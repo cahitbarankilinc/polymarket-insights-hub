@@ -71,3 +71,30 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+
+## Local Polymarket tracking workflow
+
+Bu proje artık `➕ Adres Ekle` tabından girilen **Ethereum wallet** adresleri için local takip başlatır.
+
+- Takip başlatma endpointi: `POST /api/tracker/start`
+- Takip listesi endpointi: `GET /api/tracker/list`
+- Wallet event endpointi: `GET /api/tracker/events/:address`
+
+Veriler proje kökünde bu klasöre yazılır:
+
+```txt
+tracked_wallets/<wallet_address>/
+  - events.ndjson
+  - state.json
+  - errors.log
+```
+
+Geliştirme ortamında çalıştırmak için:
+
+```sh
+npm i
+npm run dev
+```
+
+Sonra arayüzden `➕ Adres Ekle` tabında bir `0x...` adresi ekleyin; takip sonuçlarını `Takip Listesi` içinde görebilirsiniz.
