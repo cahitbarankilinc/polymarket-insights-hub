@@ -26,6 +26,13 @@ type NormalizedEvent = {
   raw_source: "activity" | "trades";
 };
 
+type WalletEventStats = {
+  total: number;
+  last24h: number;
+  buyTodayUsd: number;
+  sellTodayUsd: number;
+};
+
 type TrackerState = {
   seen_ids: string[];
   seen_queue: string[];
@@ -96,6 +103,33 @@ const readEvents = (address: string): NormalizedEvent[] => {
   } catch {
     return [];
   }
+};
+
+const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
+  const now = Date.now();
+  const last24HoursMs = 24 * 60 * 60 * 1000;
+
+  let last24h = 0;
+  let buyTodayUsd = 0;
+  let sellTodayUsd = 0;
+
+  for (const event of events) {
+    const seenTime = new Date(event.seen_at_utc).getTime();
+    if (Number.isNaN(seenTime) || now - seenTime > last24HoursMs) continue;
+
+    last24h += 1;
+    const value = event.value_usd ?? 0;
+    const side = (event.side ?? "").toUpperCase();
+    if (side === "BUY") buyTodayUsd += value;
+    if (side === "SELL") sellTodayUsd += value;
+  }
+
+  return {
+    total: events.length,
+    last24h,
+    buyTodayUsd,
+    sellTodayUsd,
+  };
 };
 
 const writeEvents = (address: string, events: NormalizedEvent[]) => {
@@ -280,7 +314,8 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
         if (req.method === "GET" && req.url?.startsWith("/api/tracker/events/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/events/", "").split("?")[0]);
           const events = readEvents(address);
-          sendJson(200, { address, events });
+          const stats = computeEventStats(events);
+          sendJson(200, { address, events, stats });
           return;
         }
 
