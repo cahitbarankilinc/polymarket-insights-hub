@@ -21,6 +21,19 @@ export type WalletTrackerInfo = {
   storagePath: string;
 };
 
+export type WalletTrackerStats = {
+  total: number;
+  last24h: number;
+  buyTodayUsd: number;
+  sellTodayUsd: number;
+};
+
+export type WalletEventsResponse = {
+  address: string;
+  events: WalletTrackerEvent[];
+  stats?: WalletTrackerStats;
+};
+
 export async function startWalletTracking(address: string) {
   const response = await fetch('/api/tracker/start', {
     method: 'POST',
@@ -43,13 +56,27 @@ export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
   return data.wallets;
 }
 
-export async function getWalletEvents(address: string): Promise<WalletTrackerEvent[]> {
+export async function getWalletEventsWithStats(address: string): Promise<WalletEventsResponse> {
   const response = await fetch(`/api/tracker/events/${address.toLowerCase()}`);
   if (!response.ok) {
     throw new Error('Cüzdan eventleri alınamadı');
   }
-  const data = await response.json() as { events: WalletTrackerEvent[] };
-  return data.events;
+
+  const data = await response.json() as WalletEventsResponse | WalletTrackerEvent[];
+  if (Array.isArray(data)) {
+    return { address: address.toLowerCase(), events: data };
+  }
+
+  return {
+    address: data.address ?? address.toLowerCase(),
+    events: Array.isArray(data.events) ? data.events : [],
+    stats: data.stats,
+  };
+}
+
+export async function getWalletEvents(address: string): Promise<WalletTrackerEvent[]> {
+  const payload = await getWalletEventsWithStats(address);
+  return payload.events;
 }
 
 export async function stopWalletTracking(address: string) {

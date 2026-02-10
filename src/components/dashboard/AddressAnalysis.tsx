@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { TrackedAddress } from '@/context/DashboardContext';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { getWalletEvents, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
+import { getWalletEventsWithStats, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
 // Mock data
 const generateChartData = () => {
@@ -59,6 +59,12 @@ const formatBerlin = (seenAt: string) => {
   return berlinDateFormat.format(parsed);
 };
 
+const toEventDate = (event: WalletTrackerEvent) => {
+  const parsedEventTime = event.event_time ? new Date(event.event_time) : null;
+  if (parsedEventTime && !Number.isNaN(parsedEventTime.getTime())) return parsedEventTime;
+  return toDateFromSeen(event.seen_at_utc);
+};
+
 const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 6 })}`;
 
 export default function AddressAnalysis({ address, onBack }: Props) {
@@ -68,18 +74,21 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const isPositive = change > 0;
 
   const [events, setEvents] = useState<WalletTrackerEvent[]>([]);
+  const [backendStats, setBackendStats] = useState<WalletTrackerStats | null>(null);
 
   useEffect(() => {
     let active = true;
 
     const load = async () => {
       try {
-        const payload = await getWalletEvents(address.address);
+        const payload = await getWalletEventsWithStats(address.address);
         if (!active) return;
-        setEvents(payload);
+        setEvents(payload.events);
+        setBackendStats(payload.stats ?? null);
       } catch {
         if (!active) return;
         setEvents([]);
+        setBackendStats(null);
       }
     };
 
@@ -94,26 +103,35 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const latest30 = useMemo(() => events.slice(0, 30), [events]);
 
   const stats = useMemo(() => {
+    if (backendStats) {
+      return {
+        total: backendStats.total,
+        last24h: backendStats.last24h,
+        buyTodayUsd: backendStats.buyTodayUsd,
+        sellTodayUsd: backendStats.sellTodayUsd,
+      };
+    }
+
     const now = Date.now();
     const last24HoursMs = 24 * 60 * 60 * 1000;
 
     const total = events.length;
-    const last24h = events.filter((event) => {
-      const seen = toDateFromSeen(event.seen_at_utc);
-      if (!seen) return false;
-      return now - seen.getTime() <= last24HoursMs;
-    }).length;
+    let last24h = 0;
+    let buyTodayUsd = 0;
+    let sellTodayUsd = 0;
 
-    const incoming = events
-      .filter((event) => (event.side ?? '').toUpperCase() === 'BUY')
-      .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
+    for (const event of events) {
+      const eventDate = toEventDate(event);
+      if (!eventDate || now - eventDate.getTime() > last24HoursMs) continue;
 
-    const outgoing = events
-      .filter((event) => (event.side ?? '').toUpperCase() === 'SELL')
-      .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
+      last24h += 1;
+      const side = (event.side ?? '').toUpperCase();
+      if (side === 'BUY') buyTodayUsd += toNumber(event.value_usd);
+      if (side === 'SELL') sellTodayUsd += toNumber(event.value_usd);
+    }
 
-    return { total, last24h, incoming, outgoing };
-  }, [events]);
+    return { total, last24h, buyTodayUsd, sellTodayUsd };
+  }, [backendStats, events]);
 
   return (
     <div className="animate-slide-up">
@@ -152,8 +170,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         {[
           { label: 'Toplam İşlem', value: String(stats.total), icon: Activity },
           { label: 'Son 24s', value: String(stats.last24h), icon: Clock },
-          { label: 'Gelen', value: formatUsd(stats.incoming), icon: ArrowDownRight, color: 'text-accent' },
-          { label: 'Giden', value: formatUsd(stats.outgoing), icon: ArrowUpRight, color: 'text-warning' },
+          { label: 'BUY Today', value: formatUsd(stats.buyTodayUsd), icon: ArrowDownRight, color: 'text-accent' },
+          { label: 'SELL Today', value: formatUsd(stats.sellTodayUsd), icon: ArrowUpRight, color: 'text-warning' },
         ].map((stat, i) => (
           <div key={i} className="stat-card">
             <div className="flex items-center gap-2 mb-2">
@@ -245,9 +263,9 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 </div>
                 <div className="text-right">
                   <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
-                    P: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}S: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}V: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
+                    Price: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}Share: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}USD: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
                   </p>
                   <p className="text-[10px] text-muted-foreground">{formatBerlin(event.seen_at_utc)}</p>
                 </div>
