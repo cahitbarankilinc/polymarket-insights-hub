@@ -43,15 +43,15 @@ const randomPrice = () => +(Math.random() * 100000 + 20000).toFixed(2);
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const [addresses, setAddresses] = useState<TrackedAddress[]>([
-    { id: '1', address: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', category: 'Whales', addedAt: new Date('2025-01-15'), label: 'Whale Alpha' },
-    { id: '2', address: 'bc1q9h5yjqka3rr4m3hazfc9kzadu7gj4x2h9ja5gy', category: 'Smart Money', addedAt: new Date('2025-02-01'), label: 'SM Trader' },
-    { id: '3', address: '3FZbgi29cpjq2GjdwV8eyHuJJnkLtktZc5', category: 'Whales', addedAt: new Date('2025-01-20') },
-    { id: '4', address: 'bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h', category: 'Market Makers', addedAt: new Date('2025-01-28') },
-    { id: '5', address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', category: 'DeFi Protocols', addedAt: new Date('2025-02-05'), label: 'Satoshi' },
+    { id: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', addedAt: new Date('2025-01-15'), label: 'Whale Alpha' },
+    { id: '2', address: '0x8f9f96f5f4f9054f0f665f2f344ecb9ed9f2f9e9', category: 'Smart Money', addedAt: new Date('2025-02-01'), label: 'SM Trader' },
+    { id: '3', address: '0x7d7f7f7c1a2f40f4a0c8e510af4f558b5756fa0d', category: 'Whales', addedAt: new Date('2025-01-20') },
+    { id: '4', address: '0x4ea5d5e7f8e8ce0c8f9f675e7e5fb42f6a2f7e24', category: 'Market Makers', addedAt: new Date('2025-01-28') },
+    { id: '5', address: '0x3f5ce5fbfe3e9af3971dD833D26BA9b5C936f0bE', category: 'DeFi Protocols', addedAt: new Date('2025-02-05'), label: 'Reference Wallet' },
   ]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([
-    { id: 'pt1', addressId: '1', address: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', category: 'Whales', strategy: 'Mirror Trading', direction: 'long', entryPrice: 42350, currentPrice: 44120, amount: 0.5, startedAt: new Date('2025-02-01'), status: 'active' },
+    { id: 'pt1', addressId: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', strategy: 'Mirror Trading', direction: 'long', entryPrice: 42350, currentPrice: 44120, amount: 0.5, startedAt: new Date('2025-02-01'), status: 'active' },
   ]);
 
   const addAddress = useCallback((address: string, category: string) => {
