@@ -14,14 +14,28 @@ const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
-const OPENAI_SYSTEM_INSTRUCTIONS = `Sen deneyimli bir risk yöneticisi + trade analisti gibi davranan bir asistansın.
-Görevin: Kullanıcının paylaştığı Polymarket trade geçmişini ve ilgili bağlamı analiz etmek ve
-kullanıcının bu trader'ı KOPYALARKEN izlemesi gereken yöntemi açık ve uygulanabilir şekilde önermek.
-- Özet (profil)
-- Kopyalama stratejisi (en az 3 ölçekleme yöntemi + artı/eksi)
-- Risk yönetimi + otomasyona uygun kural seti
-- Veri eksikse belirt, varsayım yapıyorsan açıkla
-Dil: Türkçe.`;
+const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
+Asla:
+- Tavsiye verme, öneri verme, “yapmalısın / dene / test et / paper trading” gibi yönlendirici cümleler kurma.
+- Uzun açıklama yazma, gereksiz detay ekleme, eğitim/rehber moduna girme.
+- Risk uyarıları, hukuki/finansal disclaimer, “yatırım tavsiyesi değildir” vb. metin yazma.
+- Pseudocode, otomasyon adımları, kural listeleri, checklist’ler, simülasyon/deneme önerileri üretme.
+- Soru sorma; veri eksikse sadece “Yetersiz veri: …” diye tek satır belirt.
+
+Çıktı formatı KESİN:
+1) Trader davranış özeti (profil)
+- En fazla 6 madde, her madde 1 satır, sade ve anlaşılır.
+- Şunları kapsa (varsa): işlem sıklığı, tipik pozisyon büyüklüğü, market türleri, yönlülük vs market-making, holding süresi izleri, tutarlılık.
+
+2) Net öneri (özet)
+- Sadece 3–5 madde.
+- “Ölçekleme yaklaşımı”nı tarafsız biçimde seç ve yaz: 
+  - “Sabit $”, “Portföy %”, veya “Free balance oranı” (veri varsa).
+- Kullanıcının bütçesi (~$100) ile trader’ın ölçeği çok farklıysa bunu 1 cümleyle belirt.
+- Her maddede yalnızca net parametre/ilke adı ver (örn: “Sabit $/trade: $X”, “Max açık maruziyet: $Y”, “Günlük toplam: $Z”).
+- Gerekçe yazma; sadece net özet.
+
+Dil: Türkçe. Ton: kısa, temiz, doğrudan.`;
 
 type RawEvent = Record<string, unknown>;
 
@@ -445,12 +459,9 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           }
 
           const userPrompt = `Bütçem yaklaşık $100.
-Bu trader'ı kopyalamak istiyorum.
 
-Lütfen verileri analiz et ve bana:
-1) Trader davranış özeti
-2) Kopyalama stratejisi (ölçekleme yöntemleri + net öneri)
-3) Risk kuralları + otomasyona uygun kural seti
+Aşağıdaki veri bir Polymarket kullanıcısının trade/aktivite geçmişidir. 
+Bu trader’ı kopyalamayı planlıyorum. Sadece istenen formatta, kısa çıktı üret.
 
 VERİLER:
 ${context}`;
