@@ -132,6 +132,15 @@ const normalizeMarketLabel = (market: string | null | undefined) => {
 type SortColumn = 'label' | 'buyUsd' | 'totalUsd' | 'tradeCount';
 type SortDirection = 'asc' | 'desc';
 
+const MAX_EVENTS_FOR_CHART = 20000;
+
+const resolvePriceBucketSize = (buyEventCount: number) => {
+  if (buyEventCount > 10000) return 0.02;
+  if (buyEventCount > 4000) return 0.01;
+  if (buyEventCount > 1500) return 0.005;
+  return 0.0025;
+};
+
 export default function AddressAnalysis({ address, onBack }: Props) {
   const { updateAddressNote } = useDashboard();
   const isPositive = (address.pnl ?? 0) >= 0;
@@ -162,7 +171,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     };
 
     load();
-    const intervalId = setInterval(load, 5000);
+    const intervalId = setInterval(load, 8000);
     return () => {
       active = false;
       clearInterval(intervalId);
@@ -171,46 +180,40 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
   const latest30 = useMemo(() => events.slice(0, 30), [events]);
 
-  const buyPriceShareData = useMemo(() => {
-    const grouped = new Map<number, number>();
+  const { buyPriceShareData, buyPriceUsdData } = useMemo(() => {
+    const limitedEvents = events.slice(0, MAX_EVENTS_FOR_CHART);
+    const buyEventCount = limitedEvents.reduce((count, event) => count + (((event.side ?? '').toUpperCase() === 'BUY') ? 1 : 0), 0);
+    const bucketSize = resolvePriceBucketSize(buyEventCount);
 
-    for (const event of events) {
+    const grouped = new Map<number, { share: number; usdSpent: number }>();
+
+    for (const event of limitedEvents) {
       const side = (event.side ?? '').toUpperCase();
       if (side !== 'BUY') continue;
 
       const price = toNumber(event.price);
       const share = toNumber(event.size);
-
-      if (!Number.isFinite(price) || !Number.isFinite(share) || share <= 0 || price < 0 || price > 1) continue;
-
-      const centPrice = Number(price.toFixed(2));
-      grouped.set(centPrice, (grouped.get(centPrice) ?? 0) + share);
-    }
-
-    return Array.from(grouped.entries())
-      .map(([price, share]) => ({ price, share }))
-      .sort((a, b) => a.price - b.price);
-  }, [events]);
-
-  const buyPriceUsdData = useMemo(() => {
-    const grouped = new Map<number, number>();
-
-    for (const event of events) {
-      const side = (event.side ?? '').toUpperCase();
-      if (side !== 'BUY') continue;
-
-      const price = toNumber(event.price);
       const usdSpent = toNumber(event.value_usd);
 
-      if (!Number.isFinite(price) || !Number.isFinite(usdSpent) || usdSpent <= 0 || price < 0 || price > 1) continue;
+      if (!Number.isFinite(price) || price < 0 || price > 1) continue;
 
-      const centPrice = Number(price.toFixed(2));
-      grouped.set(centPrice, (grouped.get(centPrice) ?? 0) + usdSpent);
+      const bucketedPrice = Number((Math.round(price / bucketSize) * bucketSize).toFixed(4));
+      const row = grouped.get(bucketedPrice) ?? { share: 0, usdSpent: 0 };
+
+      if (Number.isFinite(share) && share > 0) row.share += share;
+      if (Number.isFinite(usdSpent) && usdSpent > 0) row.usdSpent += usdSpent;
+
+      grouped.set(bucketedPrice, row);
     }
 
-    return Array.from(grouped.entries())
-      .map(([price, usdSpent]) => ({ price, usdSpent }))
+    const sorted = Array.from(grouped.entries())
+      .map(([price, values]) => ({ price, ...values }))
       .sort((a, b) => a.price - b.price);
+
+    return {
+      buyPriceShareData: sorted.map(({ price, share }) => ({ price, share })),
+      buyPriceUsdData: sorted.map(({ price, usdSpent }) => ({ price, usdSpent })),
+    };
   }, [events]);
 
   const stats = useMemo(() => {
@@ -404,7 +407,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-3">Share/Adet Grafiği</h3>
+          <h3 className="text-sm font-semibold text-foreground">Share/Adet Grafiği</h3>
+          <p className="text-xs text-muted-foreground mb-3">Yoğun veri geldiğinde adaptif fiyat kovası modeli ile gruplama uygulanır, böylece grafik akıcı kalır.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -452,14 +456,15 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 fill="hsl(174, 72%, 50%)"
                 line={{ stroke: 'hsl(174, 72%, 50%)', strokeWidth: 1.5 }}
                 lineType="joint"
-                shape={(props: { cx?: number; cy?: number; fill?: string }) => <circle cx={props.cx ?? 0} cy={props.cy ?? 0} r={2.5} fill={props.fill ?? 'hsl(174, 72%, 50%)'} />}
+                isAnimationActive={false}
               />
             </ScatterChart>
           </ResponsiveContainer>
         </div>
 
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-3">Price/Adet Grafiği</h3>
+          <h3 className="text-sm font-semibold text-foreground">Price/Adet Grafiği</h3>
+          <p className="text-xs text-muted-foreground mb-3">Aynı model USD dağılımına da uygulanır; okunabilirlik korunurken donmalar azaltılır.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -507,7 +512,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 fill="hsl(155, 60%, 45%)"
                 line={{ stroke: 'hsl(155, 60%, 45%)', strokeWidth: 1.5 }}
                 lineType="joint"
-                shape={(props: { cx?: number; cy?: number; fill?: string }) => <circle cx={props.cx ?? 0} cy={props.cy ?? 0} r={2.5} fill={props.fill ?? 'hsl(155, 60%, 45%)'} />}
+                isAnimationActive={false}
               />
             </ScatterChart>
           </ResponsiveContainer>
