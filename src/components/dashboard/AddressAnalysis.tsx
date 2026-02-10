@@ -1,27 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save } from 'lucide-react';
 import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { getWalletEventsWithStats, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
-
-// Mock data
-const generateChartData = () => {
-  const data = [];
-  let value = 42000;
-  for (let i = 30; i >= 0; i--) {
-    value += (Math.random() - 0.48) * 1500;
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    data.push({
-      date: d.toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }),
-      balance: Math.round(value * 100) / 100,
-      volume: Math.round(Math.random() * 5 * 100) / 100,
-    });
-  }
-  return data;
-};
-
-const chartData = generateChartData();
 
 interface Props {
   address: TrackedAddress;
@@ -208,6 +189,27 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
     return Array.from(grouped.entries())
       .map(([price, share]) => ({ price, share }))
+      .sort((a, b) => a.price - b.price);
+  }, [events]);
+
+  const buyPriceUsdData = useMemo(() => {
+    const grouped = new Map<number, number>();
+
+    for (const event of events) {
+      const side = (event.side ?? '').toUpperCase();
+      if (side !== 'BUY') continue;
+
+      const price = toNumber(event.price);
+      const usdSpent = toNumber(event.value_usd);
+
+      if (!Number.isFinite(price) || !Number.isFinite(usdSpent) || usdSpent <= 0 || price < 0 || price > 1) continue;
+
+      const centPrice = Number(price.toFixed(2));
+      grouped.set(centPrice, (grouped.get(centPrice) ?? 0) + usdSpent);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([price, usdSpent]) => ({ price, usdSpent }))
       .sort((a, b) => a.price - b.price);
   }, [events]);
 
@@ -402,7 +404,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-3">Bakiye Grafiği (30 gün)</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Share/Adet Grafiği</h3>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -457,13 +459,39 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         </div>
 
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-3">İşlem Hacmi (BTC)</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Price/Adet Grafiği</h3>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={chartData}>
+            <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }} axisLine={false} tickLine={false} />
+              <XAxis
+                type="number"
+                dataKey="price"
+                name="Price"
+                domain={[0, 1]}
+                tickCount={11}
+                tickFormatter={(value) => Number(value).toFixed(2)}
+                tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                type="number"
+                dataKey="usdSpent"
+                name="USD"
+                tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+                axisLine={false}
+                tickLine={false}
+                domain={[0, 'auto']}
+              />
               <Tooltip
+                formatter={(value, name) => {
+                  if (name === 'Price') {
+                    return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 2 }), 'Price'];
+                  }
+
+                  return [formatUsd(Number(value)), 'Harcanan USD'];
+                }}
+                labelFormatter={() => 'BUY'}
                 contentStyle={{
                   backgroundColor: 'hsl(220, 18%, 10%)',
                   border: '1px solid hsl(220, 14%, 22%)',
@@ -471,9 +499,17 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                   fontSize: '12px',
                   color: 'hsl(210, 20%, 92%)',
                 }}
+                labelStyle={{ color: 'hsl(210, 20%, 92%)' }}
+                itemStyle={{ color: 'hsl(210, 20%, 92%)' }}
               />
-              <Bar dataKey="volume" fill="hsl(155, 60%, 45%)" radius={[4, 4, 0, 0]} opacity={0.8} />
-            </BarChart>
+              <Scatter
+                data={buyPriceUsdData}
+                fill="hsl(155, 60%, 45%)"
+                line={{ stroke: 'hsl(155, 60%, 45%)', strokeWidth: 1.5 }}
+                lineType="joint"
+                shape={(props: { cx?: number; cy?: number; fill?: string }) => <circle cx={props.cx ?? 0} cy={props.cy ?? 0} r={2.5} fill={props.fill ?? 'hsl(155, 60%, 45%)'} />}
+              />
+            </ScatterChart>
           </ResponsiveContainer>
         </div>
       </div>
