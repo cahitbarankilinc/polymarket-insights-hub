@@ -102,28 +102,54 @@ const formatDecimal = (value: number | undefined) => {
   return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
 };
 
+const stripEtTimeSuffix = (value: string) => {
+  const compact = value.trim();
+  if (!compact) return compact;
+
+  const tokens = compact.split(/[\s-]+/).filter(Boolean);
+  const meridiemIndex = tokens.findIndex((token) => /^\d{1,2}(?::\d{2})?(?:am|pm)$/i.test(token));
+  if (meridiemIndex === -1) return compact;
+
+  return tokens.slice(0, meridiemIndex).join(' ');
+};
+
+const stripTimestampSuffix = (value: string) => {
+  const tokens = value.split(/[\s-]+/).filter(Boolean);
+  while (tokens.length > 1 && /^\d{9,13}$/.test(tokens[tokens.length - 1])) {
+    tokens.pop();
+  }
+  return tokens.join(' ') || value;
+};
+
+const toReadableMarketLabel = (value: string) => value.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+
 const normalizeMarketKey = (market: string | null | undefined) => {
   if (!market) return 'unknown-market';
 
   const clean = market.trim().toLowerCase();
   if (!clean) return 'unknown-market';
 
-  const tokens = clean.split('-').filter(Boolean);
-  while (tokens.length > 1 && /^\d{9,13}$/.test(tokens[tokens.length - 1])) {
-    tokens.pop();
-  }
+  const withoutEtTime = stripEtTimeSuffix(clean);
+  const withoutTimestamp = stripTimestampSuffix(withoutEtTime);
+  const normalized = withoutTimestamp || withoutEtTime || clean;
 
-  return tokens.join('-') || clean;
+  return normalized.replace(/[\s_]+/g, '-').replace(/-+/g, '-').trim() || clean;
 };
 
 const normalizeMarketLabel = (market: string | null | undefined) => {
   if (!market) return 'Unknown market';
-  const normalized = normalizeMarketKey(market);
-  return normalized
-    .split('-')
-    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
-    .join(' ');
+  const clean = market.trim();
+  if (!clean) return 'Unknown market';
+
+  const withoutEtTime = stripEtTimeSuffix(clean);
+  const withoutTimestamp = stripTimestampSuffix(withoutEtTime);
+  const readable = toReadableMarketLabel(withoutTimestamp || withoutEtTime || clean);
+
+  return readable || 'Unknown market';
 };
+
+type SortColumn = 'label' | 'buyUsd' | 'totalUsd' | 'tradeCount';
+type SortDirection = 'asc' | 'desc';
 
 export default function AddressAnalysis({ address, onBack }: Props) {
   const { updateAddressNote } = useDashboard();
@@ -131,6 +157,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const [events, setEvents] = useState<WalletTrackerEvent[]>([]);
   const [backendStats, setBackendStats] = useState<WalletTrackerStats | null>(null);
   const [noteDraft, setNoteDraft] = useState(address.note ?? '');
+  const [sortColumn, setSortColumn] = useState<SortColumn>('buyUsd');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
   useEffect(() => {
     setNoteDraft(address.note ?? '');
@@ -212,11 +240,51 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       marketMap.set(key, row);
     }
 
-    return Array.from(marketMap.entries())
-      .map(([key, value]) => ({ key, ...value }))
-      .sort((a, b) => b.buyUsd - a.buyUsd || b.totalUsd - a.totalUsd)
-      .slice(0, 10);
-  }, [events]);
+    const aggregated = Array.from(marketMap.entries()).map(([key, value]) => ({ key, ...value }));
+
+    const sorted = aggregated.sort((a, b) => {
+      const multiplier = sortDirection === 'asc' ? 1 : -1;
+
+      if (sortColumn === 'label') {
+        const byLabel = a.label.localeCompare(b.label, 'tr');
+        if (byLabel !== 0) return byLabel * multiplier;
+      }
+
+      if (sortColumn === 'buyUsd') {
+        const byBuyUsd = a.buyUsd - b.buyUsd;
+        if (byBuyUsd !== 0) return byBuyUsd * multiplier;
+      }
+
+      if (sortColumn === 'totalUsd') {
+        const byTotalUsd = a.totalUsd - b.totalUsd;
+        if (byTotalUsd !== 0) return byTotalUsd * multiplier;
+      }
+
+      if (sortColumn === 'tradeCount') {
+        const byTradeCount = a.tradeCount - b.tradeCount;
+        if (byTradeCount !== 0) return byTradeCount * multiplier;
+      }
+
+      return (b.buyUsd - a.buyUsd) || (b.totalUsd - a.totalUsd);
+    });
+
+    return sorted.slice(0, 10);
+  }, [events, sortColumn, sortDirection]);
+
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+
+    setSortColumn(column);
+    setSortDirection(column === 'label' ? 'asc' : 'desc');
+  };
+
+  const sortIndicator = (column: SortColumn) => {
+    if (sortColumn !== column) return '↕';
+    return sortDirection === 'asc' ? '↑' : '↓';
+  };
 
   const handleSaveNote = () => {
     updateAddressNote(address.id, noteDraft);
@@ -368,10 +436,26 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             <thead>
               <tr className="text-left text-muted-foreground border-b border-border/40">
                 <th className="py-2 pr-2 text-xs font-medium">#</th>
-                <th className="py-2 pr-2 text-xs font-medium">Market</th>
-                <th className="py-2 pr-2 text-xs font-medium text-right">BUY USD</th>
-                <th className="py-2 pr-2 text-xs font-medium text-right">Toplam USD</th>
-                <th className="py-2 text-xs font-medium text-right">İşlem</th>
+                <th className="py-2 pr-2 text-xs font-medium">
+                  <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('label')}>
+                    Market <span className="text-[10px]">{sortIndicator('label')}</span>
+                  </button>
+                </th>
+                <th className="py-2 pr-2 text-xs font-medium text-right">
+                  <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('buyUsd')}>
+                    BUY USD <span className="text-[10px]">{sortIndicator('buyUsd')}</span>
+                  </button>
+                </th>
+                <th className="py-2 pr-2 text-xs font-medium text-right">
+                  <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('totalUsd')}>
+                    Toplam USD <span className="text-[10px]">{sortIndicator('totalUsd')}</span>
+                  </button>
+                </th>
+                <th className="py-2 text-xs font-medium text-right">
+                  <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('tradeCount')}>
+                    İşlem <span className="text-[10px]">{sortIndicator('tradeCount')}</span>
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -393,7 +477,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
           </table>
         </div>
         <p className="mt-3 text-[11px] text-muted-foreground">
-          Not: Market adlarının sonundaki zaman damgası parçaları (örn. -1770746400) normalize edilerek aynı strateji marketinde birleştirildi.
+          Not: Market adlarının sonundaki zaman damgası parçaları (örn. -1770746400) ve saat eki (örn. 1pm Et) normalize edilerek aynı strateji marketinde birleştirildi.
         </p>
       </div>
 
