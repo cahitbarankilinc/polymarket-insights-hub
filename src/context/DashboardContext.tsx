@@ -6,6 +6,14 @@ export interface TrackedAddress {
   category: string;
   addedAt: Date;
   label?: string;
+  profileUrl?: string;
+  username?: string;
+  trades?: number;
+  largestWin?: number;
+  views?: number;
+  amount?: number;
+  pnl?: number;
+  polygonscanTopTotalValText?: string | null;
 }
 
 export interface PaperTrade {
@@ -26,7 +34,7 @@ interface DashboardContextType {
   addresses: TrackedAddress[];
   categories: string[];
   paperTrades: PaperTrade[];
-  addAddress: (address: string, category: string) => void;
+  addAddress: (address: string, category: string, profile?: Partial<TrackedAddress>) => void;
   removeAddress: (id: string) => void;
   addCategory: (category: string) => void;
   addToPaperTrade: (addressId: string) => void;
@@ -54,12 +62,13 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     { id: 'pt1', addressId: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', strategy: 'Mirror Trading', direction: 'long', entryPrice: 42350, currentPrice: 44120, amount: 0.5, startedAt: new Date('2025-02-01'), status: 'active' },
   ]);
 
-  const addAddress = useCallback((address: string, category: string) => {
+  const addAddress = useCallback((address: string, category: string, profile?: Partial<TrackedAddress>) => {
     const newAddr: TrackedAddress = {
       id: Date.now().toString(),
       address,
       category,
       addedAt: new Date(),
+      ...profile,
     };
     setAddresses(prev => [...prev, newAddr]);
   }, []);

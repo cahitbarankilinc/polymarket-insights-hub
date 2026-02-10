@@ -92,12 +92,18 @@ const toEventDate = (event: WalletTrackerEvent) => {
 
 const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 6 })}`;
 
-export default function AddressAnalysis({ address, onBack }: Props) {
-  const totalBalance = chartData[chartData.length - 1].balance;
-  const prevBalance = chartData[chartData.length - 2].balance;
-  const change = ((totalBalance - prevBalance) / prevBalance) * 100;
-  const isPositive = change > 0;
+const formatCurrency = (value: number | undefined) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return value.toLocaleString('tr-TR', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+};
 
+const formatDecimal = (value: number | undefined) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
+};
+
+export default function AddressAnalysis({ address, onBack }: Props) {
+  const isPositive = (address.pnl ?? 0) >= 0;
   const [events, setEvents] = useState<WalletTrackerEvent[]>([]);
   const [backendStats, setBackendStats] = useState<WalletTrackerStats | null>(null);
 
@@ -173,7 +179,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <h2 className="text-lg font-bold text-foreground">{address.label || 'Anonim Adres'}</h2>
+              <h2 className="text-lg font-bold text-foreground">{address.username || address.label || 'Anonim Adres'}</h2>
               <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
                 {address.category}
               </span>
@@ -181,13 +187,32 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             <p className="font-mono text-xs text-muted-foreground">{address.address}</p>
           </div>
           <div className="text-right">
-            <p className="text-2xl font-bold text-foreground">${totalBalance.toLocaleString()}</p>
+            <p className="text-2xl font-bold text-foreground">{formatCurrency(address.pnl)}</p>
             <p className={`text-sm font-medium flex items-center justify-end gap-1 ${isPositive ? 'text-accent' : 'text-destructive'}`}>
               {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-              {isPositive ? '+' : ''}{change.toFixed(2)}%
+              PnL
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Profile Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+        {[
+          { label: 'Serbest Para', value: address.polygonscanTopTotalValText || '-' },
+          { label: 'Oyundaki Para', value: formatCurrency(address.amount) },
+          { label: 'Toplam Oyun', value: formatDecimal(address.trades) },
+          { label: 'Biggest Win', value: formatCurrency(address.largestWin) },
+          { label: 'Followers', value: formatDecimal(address.views) },
+          { label: 'PnL', value: formatCurrency(address.pnl) },
+        ].map((stat, i) => (
+          <div key={i} className="stat-card">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{stat.label}</span>
+            </div>
+            <p className="text-lg font-bold text-foreground">{stat.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Stats */}

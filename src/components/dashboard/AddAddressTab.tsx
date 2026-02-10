@@ -1,49 +1,76 @@
 import { useState } from 'react';
-import { Plus, Wallet, Tag, Check } from 'lucide-react';
+import { Plus, Link as LinkIcon, Tag, Check } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
-import { startWalletTracking } from '@/lib/polymarketTrackerApi';
+import { resolvePolymarketProfile, startWalletTracking } from '@/lib/polymarketTrackerApi';
 
 export default function AddAddressTab() {
   const { categories, addAddress, addCategory } = useDashboard();
-  const [address, setAddress] = useState('');
+  const [profileUrl, setProfileUrl] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [newCategory, setNewCategory] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const isValidEthAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value);
+  const isProbablyUrl = (value: string) => /^https?:\/\/.+/i.test(value.trim());
 
   const handleSubmit = async () => {
-    if (!address.trim()) {
-      toast.error('Lütfen bir wallet adresi girin');
+    if (!profileUrl.trim()) {
+      toast.error('Lütfen bir Polymarket profil linki girin');
       return;
     }
-    if (!isValidEthAddress(address.trim())) {
-      toast.error('Lütfen geçerli bir Ethereum adresi girin (0x...)');
+    if (!isProbablyUrl(profileUrl)) {
+      toast.error('Lütfen geçerli bir profil linki girin (https://...)');
       return;
     }
+
     const cat = isAddingCategory ? newCategory.trim() : selectedCategory;
     if (!cat) {
       toast.error('Lütfen bir kategori seçin veya ekleyin');
       return;
     }
-    if (isAddingCategory && newCategory.trim()) {
-      addCategory(newCategory.trim());
-    }
-    const normalizedAddress = address.trim().toLowerCase();
-    addAddress(normalizedAddress, cat);
 
+    setIsSubmitting(true);
     try {
-      await startWalletTracking(normalizedAddress);
-    } catch {
-      toast.error('Adres eklendi ama local takip başlatılamadı');
-    }
+      const resolvedProfile = await resolvePolymarketProfile(profileUrl.trim());
+      const normalizedAddress = resolvedProfile.proxyWallet?.trim().toLowerCase();
 
-    setAddress('');
-    setSelectedCategory('');
-    setNewCategory('');
-    setIsAddingCategory(false);
-    toast.success('Adres başarıyla eklendi!');
+      if (!normalizedAddress || !/^0x[a-fA-F0-9]{40}$/.test(normalizedAddress)) {
+        toast.error('Linkten geçerli bir proxy wallet adresi alınamadı');
+        return;
+      }
+
+      if (isAddingCategory && newCategory.trim()) {
+        addCategory(newCategory.trim());
+      }
+
+      addAddress(normalizedAddress, cat, {
+        profileUrl: profileUrl.trim(),
+        username: resolvedProfile.username ?? undefined,
+        trades: typeof resolvedProfile.trades === 'number' ? resolvedProfile.trades : undefined,
+        largestWin: typeof resolvedProfile.largestWin === 'number' ? resolvedProfile.largestWin : undefined,
+        views: typeof resolvedProfile.views === 'number' ? resolvedProfile.views : undefined,
+        amount: typeof resolvedProfile.amount === 'number' ? resolvedProfile.amount : undefined,
+        pnl: typeof resolvedProfile.pnl === 'number' ? resolvedProfile.pnl : undefined,
+        polygonscanTopTotalValText: resolvedProfile.polygonscanTopTotalValText ?? null,
+      });
+
+      try {
+        await startWalletTracking(normalizedAddress);
+      } catch {
+        toast.error('Adres eklendi ama local takip başlatılamadı');
+      }
+
+      setProfileUrl('');
+      setSelectedCategory('');
+      setNewCategory('');
+      setIsAddingCategory(false);
+      toast.success('Profil başarıyla eklendi!');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Profil verisi alınamadı');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -52,33 +79,30 @@ export default function AddAddressTab() {
         <h2 className="text-2xl font-bold mb-2">
           <span className="gradient-text">Yeni Adres</span> Takibe Al
         </h2>
-        <p className="text-muted-foreground text-sm">Polymarket cüzdan adresini ekle, local klasörde NDJSON olarak takip et</p>
+        <p className="text-muted-foreground text-sm">Polymarket profil linkini ekle, proxy wallet ile local klasörde NDJSON takip başlat</p>
       </div>
 
       <div className="glass-card p-6 space-y-6">
-        {/* Address Input */}
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-            <Wallet className="w-4 h-4 text-primary" />
-            Wallet Adresi
+            <LinkIcon className="w-4 h-4 text-primary" />
+            Polymarket Profil Linki
           </label>
           <input
             type="text"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder="0x23cb796cf58bfa12352f0164f479deedbd50658e"
-            className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 font-mono text-sm transition-all"
+            value={profileUrl}
+            onChange={(e) => setProfileUrl(e.target.value)}
+            placeholder="https://polymarket.com/@kullanici?tab=activity"
+            className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 text-sm transition-all"
           />
         </div>
 
-        {/* Category Section */}
         <div className="space-y-3">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Tag className="w-4 h-4 text-primary" />
             Kategori <span className="text-destructive">*</span>
           </label>
 
-          {/* Existing Categories */}
           <div className="flex flex-wrap gap-2">
             {categories.map((cat) => (
               <button
@@ -116,7 +140,6 @@ export default function AddAddressTab() {
             </button>
           </div>
 
-          {/* New Category Input */}
           {isAddingCategory && (
             <input
               type="text"
@@ -129,17 +152,16 @@ export default function AddAddressTab() {
           )}
         </div>
 
-        {/* Submit */}
         <button
           onClick={handleSubmit}
-          className="w-full py-3 rounded-lg font-semibold text-sm transition-all duration-300 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 hover:shadow-[0_0_20px_hsl(174_72%_50%/0.2)] active:scale-[0.98]"
+          disabled={isSubmitting}
+          className="w-full py-3 rounded-lg font-semibold text-sm transition-all duration-300 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 hover:shadow-[0_0_20px_hsl(174_72%_50%/0.2)] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <Plus className="w-4 h-4 inline mr-2" />
-          Adresi Takibe Al
+          {isSubmitting ? 'Profil Çözümleniyor...' : 'Adresi Takibe Al'}
         </button>
       </div>
 
-      {/* Info cards */}
       <div className="grid grid-cols-3 gap-3 mt-6">
         {[
           { label: 'Anlık Takip', desc: 'Tüm işlemler canlı' },

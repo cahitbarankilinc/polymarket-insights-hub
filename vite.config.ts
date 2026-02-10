@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import fs from "fs";
+import { spawnSync } from "child_process";
 import { componentTagger } from "lovable-tagger";
 
 const POLL_INTERVAL_MS = 3000;
@@ -9,6 +10,7 @@ const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
+const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 
 type RawEvent = Record<string, unknown>;
 
@@ -198,6 +200,45 @@ const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): Normalize
   };
 };
 
+
+const resolveProfileFromUrl = (profileUrl: string) => {
+  const safeUrl = profileUrl.trim();
+  if (!safeUrl) {
+    throw new Error("profileUrl is required");
+  }
+
+  const candidates = ["python3", "python"] as const;
+  let lastError = "Python command failed";
+
+  for (const bin of candidates) {
+    const result = spawnSync(bin, [PROFILE_SCRIPT_PATH, safeUrl], { encoding: "utf-8" });
+    if (result.error) {
+      lastError = result.error.message;
+      continue;
+    }
+
+    if (result.status !== 0) {
+      lastError = (result.stderr || result.stdout || `${bin} exited with ${result.status}`).trim();
+      continue;
+    }
+
+    const output = result.stdout.trim();
+    if (!output) {
+      throw new Error("Profil scripti boş cevap döndü");
+    }
+
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    const proxyWallet = typeof parsed.proxyWallet === "string" ? normalizeWallet(parsed.proxyWallet) : "";
+    if (!proxyWallet) {
+      throw new Error("Profil çıktısında proxyWallet bulunamadı");
+    }
+
+    return { ...parsed, proxyWallet };
+  }
+
+  throw new Error(lastError);
+};
+
 const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> => {
   const response = await fetch(`${url}?user=${address}&limit=50&offset=0`);
   if (!response.ok) {
@@ -296,6 +337,21 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
       };
 
       try {
+        if (req.method === "POST" && req.url === "/api/tracker/profile") {
+          let rawBody = "";
+          await new Promise<void>((resolve) => {
+            req.on("data", (chunk) => {
+              rawBody += chunk.toString();
+            });
+            req.on("end", () => resolve());
+          });
+
+          const parsed = rawBody ? (JSON.parse(rawBody) as { profileUrl?: string }) : {};
+          const profileData = resolveProfileFromUrl(parsed.profileUrl ?? "");
+          sendJson(200, profileData);
+          return;
+        }
+
         if (req.method === "POST" && req.url === "/api/tracker/start") {
           let rawBody = "";
           await new Promise<void>((resolve) => {

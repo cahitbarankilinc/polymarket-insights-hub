@@ -34,6 +34,32 @@ export type WalletEventsResponse = {
   stats?: WalletTrackerStats;
 };
 
+export type PolymarketProfileResponse = {
+  proxyWallet: string;
+  username?: string | null;
+  trades?: number | null;
+  largestWin?: number | null;
+  views?: number | null;
+  joinDate?: string | null;
+  amount?: number | null;
+  pnl?: number | null;
+  polygonscanUrl?: string | null;
+  polygonscanTopTotalValText?: string | null;
+};
+
+export async function resolvePolymarketProfile(profileUrl: string): Promise<PolymarketProfileResponse> {
+  const response = await fetch('/api/tracker/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profileUrl }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Profil verisi alınamadı');
+  }
+  return response.json() as Promise<PolymarketProfileResponse>;
+}
+
 export async function startWalletTracking(address: string) {
   const response = await fetch('/api/tracker/start', {
     method: 'POST',
