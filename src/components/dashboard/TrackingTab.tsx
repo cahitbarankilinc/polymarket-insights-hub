@@ -1,20 +1,49 @@
-import { useState } from 'react';
-import { Search, Filter, ArrowUpRight, Trash2, BarChart3, Copy, ChevronRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
 import AddressAnalysis from './AddressAnalysis';
+import { getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
 
 export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: string) => void }) {
   const { addresses, categories, removeAddress } = useDashboard();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [analysisAddress, setAnalysisAddress] = useState<string | null>(null);
+  const [trackerMap, setTrackerMap] = useState<Record<string, WalletTrackerInfo>>({});
+  const [eventsMap, setEventsMap] = useState<Record<string, WalletTrackerEvent[]>>({});
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
     const matchSearch = !searchQuery || a.address.toLowerCase().includes(searchQuery.toLowerCase());
     return matchCat && matchSearch;
   });
+
+  useEffect(() => {
+    const syncTracking = async () => {
+      try {
+        const wallets = await listTrackedWallets();
+        const nextTrackerMap = wallets.reduce<Record<string, WalletTrackerInfo>>((acc, wallet) => {
+          acc[wallet.address] = wallet;
+          return acc;
+        }, {});
+        setTrackerMap(nextTrackerMap);
+
+        const trackedAddresses = addresses.map((addr) => addr.address.toLowerCase());
+        const eventsPairs = await Promise.all(trackedAddresses.map(async (address) => {
+          const events = await getWalletEvents(address);
+          return [address, events.slice(0, 3)] as const;
+        }));
+        setEventsMap(Object.fromEntries(eventsPairs));
+      } catch {
+        // local tracker dev server kapalı olabilir
+      }
+    };
+
+    syncTracking();
+    const id = setInterval(syncTracking, 5000);
+    return () => clearInterval(id);
+  }, [addresses]);
 
   if (analysisAddress) {
     const addr = addresses.find(a => a.id === analysisAddress);
@@ -127,6 +156,21 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   <p className="text-[10px] text-muted-foreground/60 mt-1">
                     Eklendi: {addr.addedAt.toLocaleDateString('tr-TR')}
                   </p>
+                  {trackerMap[addr.address.toLowerCase()] && (
+                    <p className="text-[10px] text-emerald-400/90 mt-1">
+                      {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •
+                      {' '}Toplam event: {trackerMap[addr.address.toLowerCase()].eventCount}
+                    </p>
+                  )}
+                  {eventsMap[addr.address.toLowerCase()]?.length ? (
+                    <div className="mt-2 space-y-1">
+                      {eventsMap[addr.address.toLowerCase()].map((event, index) => (
+                        <p key={`${event.tx_hash ?? index}-${event.seen_at_utc}`} className="text-[10px] text-muted-foreground/80 truncate">
+                          [{event.raw_source}] {(event.side ?? event.type ?? 'EVENT').toUpperCase()} • {event.market ?? 'Unknown market'}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
@@ -153,6 +197,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                     onClick={(e) => {
                       e.stopPropagation();
                       removeAddress(addr.id);
+                      stopWalletTracking(addr.address);
                       toast.success('Adres silindi');
                     }}
                     className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"

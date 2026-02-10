@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Wallet, Tag, Check } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
+import { startWalletTracking } from '@/lib/polymarketTrackerApi';
 
 export default function AddAddressTab() {
   const { categories, addAddress, addCategory } = useDashboard();
@@ -10,9 +11,15 @@ export default function AddAddressTab() {
   const [newCategory, setNewCategory] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
 
-  const handleSubmit = () => {
+  const isValidEthAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value);
+
+  const handleSubmit = async () => {
     if (!address.trim()) {
-      toast.error('Lütfen bir BTC adresi girin');
+      toast.error('Lütfen bir wallet adresi girin');
+      return;
+    }
+    if (!isValidEthAddress(address.trim())) {
+      toast.error('Lütfen geçerli bir Ethereum adresi girin (0x...)');
       return;
     }
     const cat = isAddingCategory ? newCategory.trim() : selectedCategory;
@@ -23,7 +30,15 @@ export default function AddAddressTab() {
     if (isAddingCategory && newCategory.trim()) {
       addCategory(newCategory.trim());
     }
-    addAddress(address.trim(), cat);
+    const normalizedAddress = address.trim().toLowerCase();
+    addAddress(normalizedAddress, cat);
+
+    try {
+      await startWalletTracking(normalizedAddress);
+    } catch {
+      toast.error('Adres eklendi ama local takip başlatılamadı');
+    }
+
     setAddress('');
     setSelectedCategory('');
     setNewCategory('');
@@ -37,7 +52,7 @@ export default function AddAddressTab() {
         <h2 className="text-2xl font-bold mb-2">
           <span className="gradient-text">Yeni Adres</span> Takibe Al
         </h2>
-        <p className="text-muted-foreground text-sm">BTC cüzdan adresini ekle ve hareketlerini takip et</p>
+        <p className="text-muted-foreground text-sm">Polymarket cüzdan adresini ekle, local klasörde NDJSON olarak takip et</p>
       </div>
 
       <div className="glass-card p-6 space-y-6">
@@ -45,13 +60,13 @@ export default function AddAddressTab() {
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Wallet className="w-4 h-4 text-primary" />
-            BTC Adresi
+            Wallet Adresi
           </label>
           <input
             type="text"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="bc1q... veya 1A1z... veya 3FZb..."
+            placeholder="0x23cb796cf58bfa12352f0164f479deedbd50658e"
             className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 font-mono text-sm transition-all"
           />
         </div>

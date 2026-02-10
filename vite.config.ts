@@ -1,7 +1,303 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import fs from "fs";
 import { componentTagger } from "lovable-tagger";
+
+const POLL_INTERVAL_MS = 3000;
+const MAX_EVENTS = 200;
+const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
+const TRADES_URL = "https://data-api.polymarket.com/trades";
+const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
+
+type RawEvent = Record<string, unknown>;
+
+type NormalizedEvent = {
+  seen_at_utc: string;
+  event_time?: string | null;
+  type?: string | null;
+  side?: string | null;
+  market?: string | null;
+  outcome?: string | null;
+  price?: number | null;
+  size?: number | null;
+  value_usd?: number | null;
+  tx_hash?: string | null;
+  raw_source: "activity" | "trades";
+};
+
+type TrackerState = {
+  seen_ids: string[];
+  seen_queue: string[];
+  last_check: string | null;
+};
+
+type TrackerRuntime = {
+  timer: NodeJS.Timeout;
+  state: TrackerState;
+};
+
+const runtimes = new Map<string, TrackerRuntime>();
+
+const utcNowIso = () => new Date().toISOString();
+
+const toFloat = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const normalizeWallet = (address: string) => address.trim().toLowerCase();
+
+const walletDir = (address: string) => path.join(TRACKING_ROOT, normalizeWallet(address));
+const stateFile = (address: string) => path.join(walletDir(address), "state.json");
+const eventsFile = (address: string) => path.join(walletDir(address), "events.ndjson");
+const errorsFile = (address: string) => path.join(walletDir(address), "errors.log");
+
+const ensureWalletDir = (address: string) => {
+  fs.mkdirSync(walletDir(address), { recursive: true });
+};
+
+const readState = (address: string): TrackerState => {
+  try {
+    const content = fs.readFileSync(stateFile(address), "utf-8");
+    const parsed = JSON.parse(content) as Partial<TrackerState>;
+    return {
+      seen_ids: Array.isArray(parsed.seen_ids) ? parsed.seen_ids : [],
+      seen_queue: Array.isArray(parsed.seen_queue) ? parsed.seen_queue : [],
+      last_check: typeof parsed.last_check === "string" ? parsed.last_check : null,
+    };
+  } catch {
+    return { seen_ids: [], seen_queue: [], last_check: null };
+  }
+};
+
+const writeState = (address: string, state: TrackerState) => {
+  fs.writeFileSync(stateFile(address), JSON.stringify(state, null, 2), "utf-8");
+};
+
+const readEvents = (address: string): NormalizedEvent[] => {
+  try {
+    const lines = fs.readFileSync(eventsFile(address), "utf-8").split("\n").filter(Boolean);
+    return lines
+      .map((line) => {
+        try {
+          return JSON.parse(line) as NormalizedEvent;
+        } catch {
+          return null;
+        }
+      })
+      .filter((event): event is NormalizedEvent => event !== null)
+      .slice(0, MAX_EVENTS);
+  } catch {
+    return [];
+  }
+};
+
+const writeEvents = (address: string, events: NormalizedEvent[]) => {
+  const data = events.slice(0, MAX_EVENTS).map((event) => JSON.stringify(event)).join("\n");
+  fs.writeFileSync(eventsFile(address), data ? `${data}\n` : "", "utf-8");
+};
+
+const appendError = (address: string, message: string) => {
+  fs.appendFileSync(errorsFile(address), `[${utcNowIso()}] ${message}\n`, "utf-8");
+};
+
+const generateEventId = (raw: RawEvent, source: "activity" | "trades") => {
+  const txHash = raw.transactionHash ?? raw.txHash ?? raw.hash;
+  if (txHash) return String(txHash);
+  const eventTime = raw.timestamp ?? raw.createdAt ?? raw.time ?? raw.eventTime;
+  const market = raw.question ?? raw.slug ?? raw.market ?? raw.marketId;
+  const side = raw.side ?? raw.action ?? "";
+  const size = raw.size ?? raw.amount ?? raw.shares ?? "";
+  return `${source}:${String(eventTime)}|${String(market)}|${String(side)}|${String(size)}`;
+};
+
+const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): NormalizedEvent => {
+  const price = toFloat(raw.price ?? raw.avgPrice);
+  const size = toFloat(raw.size ?? raw.amount ?? raw.shares);
+  const valueFromEvent = toFloat(raw.value ?? raw.valueUSD);
+
+  return {
+    seen_at_utc: utcNowIso(),
+    event_time: (raw.timestamp ?? raw.createdAt ?? raw.time ?? raw.eventTime ?? null) as string | null,
+    type: (raw.type ?? raw.eventType ?? (source === "trades" ? "TRADE" : null)) as string | null,
+    side: (raw.side ?? raw.action ?? null) as string | null,
+    market: (raw.question ?? raw.slug ?? raw.market ?? raw.marketId ?? null) as string | null,
+    outcome: (raw.outcome ?? raw.outcomeName ?? raw.token ?? null) as string | null,
+    price,
+    size,
+    value_usd: valueFromEvent ?? (price !== null && size !== null ? Number((price * size).toFixed(6)) : null),
+    tx_hash: (raw.transactionHash ?? raw.txHash ?? raw.hash ?? null) as string | null,
+    raw_source: source,
+  };
+};
+
+const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> => {
+  const response = await fetch(`${url}?user=${address}&limit=50&offset=0`);
+  if (!response.ok) {
+    throw new Error(`${url} -> HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (Array.isArray(payload)) return payload as RawEvent[];
+  if (payload && typeof payload === "object") {
+    const keys = ["data", "activities", "trades", "activity"] as const;
+    for (const key of keys) {
+      const candidate = (payload as Record<string, unknown>)[key];
+      if (Array.isArray(candidate)) return candidate as RawEvent[];
+    }
+  }
+  return [];
+};
+
+const startTracker = (address: string) => {
+  const normalizedAddress = normalizeWallet(address);
+  if (!normalizedAddress) return;
+  if (runtimes.has(normalizedAddress)) return;
+
+  ensureWalletDir(normalizedAddress);
+  const state = readState(normalizedAddress);
+
+  const tick = async () => {
+    const allEvents = readEvents(normalizedAddress);
+    const seenIds = new Set(state.seen_ids);
+    const seenQueue = [...state.seen_queue];
+
+    try {
+      const [activity, trades] = await Promise.all([
+        fetchEndpoint(ACTIVITY_URL, normalizedAddress),
+        fetchEndpoint(TRADES_URL, normalizedAddress),
+      ]);
+
+      const newEvents: NormalizedEvent[] = [];
+      for (const [payload, source] of [
+        [activity, "activity" as const],
+        [trades, "trades" as const],
+      ]) {
+        for (const item of payload) {
+          const eventId = generateEventId(item, source);
+          if (seenIds.has(eventId)) continue;
+          seenIds.add(eventId);
+          seenQueue.push(eventId);
+          while (seenQueue.length > MAX_EVENTS) {
+            const oldest = seenQueue.shift();
+            if (oldest) seenIds.delete(oldest);
+          }
+          newEvents.push(normalizeEvent(item, source));
+        }
+      }
+
+      if (newEvents.length > 0) {
+        writeEvents(normalizedAddress, [...newEvents.reverse(), ...allEvents].slice(0, MAX_EVENTS));
+      }
+
+      state.seen_ids = [...seenIds];
+      state.seen_queue = seenQueue;
+      state.last_check = utcNowIso();
+      writeState(normalizedAddress, state);
+    } catch (error) {
+      appendError(normalizedAddress, error instanceof Error ? error.message : "Unknown polling error");
+    }
+  };
+
+  tick();
+  const timer = setInterval(tick, POLL_INTERVAL_MS);
+  runtimes.set(normalizedAddress, { timer, state });
+};
+
+const stopTracker = (address: string) => {
+  const normalizedAddress = normalizeWallet(address);
+  const runtime = runtimes.get(normalizedAddress);
+  if (!runtime) return;
+  clearInterval(runtime.timer);
+  runtimes.delete(normalizedAddress);
+};
+
+const createPolymarketTrackerPlugin = (): Plugin => ({
+  name: "polymarket-local-tracker",
+  configureServer(server) {
+    fs.mkdirSync(TRACKING_ROOT, { recursive: true });
+
+    server.middlewares.use(async (req, res, next) => {
+      if (!req.url?.startsWith("/api/tracker")) {
+        next();
+        return;
+      }
+
+      const sendJson = (code: number, payload: unknown) => {
+        res.statusCode = code;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(payload));
+      };
+
+      try {
+        if (req.method === "POST" && req.url === "/api/tracker/start") {
+          let rawBody = "";
+          await new Promise<void>((resolve) => {
+            req.on("data", (chunk) => {
+              rawBody += chunk.toString();
+            });
+            req.on("end", () => resolve());
+          });
+
+          const parsed = rawBody ? (JSON.parse(rawBody) as { address?: string }) : {};
+          const address = normalizeWallet(parsed.address ?? "");
+          if (!address) {
+            sendJson(400, { error: "address is required" });
+            return;
+          }
+
+          startTracker(address);
+          sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          return;
+        }
+
+        if (req.method === "GET" && req.url === "/api/tracker/list") {
+          const wallets = fs
+            .readdirSync(TRACKING_ROOT, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => {
+              const address = entry.name;
+              const events = readEvents(address);
+              const state = readState(address);
+              return {
+                address,
+                eventCount: events.length,
+                latestEvent: events[0] ?? null,
+                lastCheck: state.last_check,
+                isActive: runtimes.has(address),
+                storagePath: walletDir(address),
+              };
+            });
+          sendJson(200, { wallets });
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/events/")) {
+          const address = normalizeWallet(req.url.replace("/api/tracker/events/", "").split("?")[0]);
+          const events = readEvents(address);
+          sendJson(200, { address, events });
+          return;
+        }
+
+        if (req.method === "DELETE" && req.url?.startsWith("/api/tracker/")) {
+          const address = normalizeWallet(req.url.replace("/api/tracker/", "").split("?")[0]);
+          stopTracker(address);
+          sendJson(200, { ok: true, address });
+          return;
+        }
+
+        sendJson(404, { error: "Not found" });
+      } catch (error) {
+        sendJson(500, { error: error instanceof Error ? error.message : "Server error" });
+      }
+    });
+  },
+});
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -12,7 +308,7 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
   },
-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  plugins: [react(), createPolymarketTrackerPlugin(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
