@@ -34,6 +34,11 @@ export type WalletEventsResponse = {
   stats?: WalletTrackerStats;
 };
 
+export type CopytradeAdvisorResponse = {
+  analysis: string;
+  model: string;
+};
+
 export type PolymarketProfileResponse = {
   proxyWallet: string;
   username?: string | null;
@@ -107,4 +112,19 @@ export async function getWalletEvents(address: string): Promise<WalletTrackerEve
 
 export async function stopWalletTracking(address: string) {
   await fetch(`/api/tracker/${address.toLowerCase()}`, { method: 'DELETE' });
+}
+
+export async function requestCopytradeAdvisor(context: string): Promise<CopytradeAdvisorResponse> {
+  const response = await fetch('/api/tracker/copytrade-advisor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'OpenAI analizi alınamadı');
+  }
+
+  return response.json() as Promise<CopytradeAdvisorResponse>;
 }

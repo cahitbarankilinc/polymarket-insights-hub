@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save, Bot } from 'lucide-react';
 import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { getWalletEventsWithStats, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
+import { getWalletEventsWithStats, requestCopytradeAdvisor, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
 interface Props {
   address: TrackedAddress;
@@ -149,10 +149,37 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const [noteDraft, setNoteDraft] = useState(address.note ?? '');
   const [sortColumn, setSortColumn] = useState<SortColumn>('buyUsd');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [advisorLoading, setAdvisorLoading] = useState(false);
+  const [advisorError, setAdvisorError] = useState<string | null>(null);
+  const [advisorResult, setAdvisorResult] = useState<string | null>(null);
+  const [advisorUpdatedAt, setAdvisorUpdatedAt] = useState<string | null>(null);
+
+  const advisorStorageKey = useMemo(() => `copytrade-advisor:${address.address.toLowerCase()}`, [address.address]);
 
   useEffect(() => {
     setNoteDraft(address.note ?? '');
   }, [address.id, address.note]);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(advisorStorageKey);
+    if (!raw) {
+      setAdvisorResult(null);
+      setAdvisorUpdatedAt(null);
+      setAdvisorError(null);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as { result?: string; updatedAt?: string };
+      setAdvisorResult(parsed.result ?? null);
+      setAdvisorUpdatedAt(parsed.updatedAt ?? null);
+      setAdvisorError(null);
+    } catch {
+      setAdvisorResult(null);
+      setAdvisorUpdatedAt(null);
+      setAdvisorError(null);
+    }
+  }, [advisorStorageKey]);
 
   useEffect(() => {
     let active = true;
@@ -314,6 +341,41 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
   const handleSaveNote = () => {
     updateAddressNote(address.id, noteDraft);
+  };
+
+  const advisorContext = useMemo(() => JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    wallet: {
+      username: address.username,
+      label: address.label,
+      category: address.category,
+      address: address.address,
+      pnl: address.pnl,
+      volume: address.volume,
+      winRate: address.winRate,
+      totalTrades: address.totalTrades,
+      note: noteDraft,
+    },
+    stats,
+    topMarketSpend,
+    latestActivities: latest30,
+  }, null, 2), [address.address, address.category, address.label, address.pnl, address.totalTrades, address.username, address.volume, address.winRate, latest30, noteDraft, stats, topMarketSpend]);
+
+  const runAdvisor = async () => {
+    setAdvisorLoading(true);
+    setAdvisorError(null);
+
+    try {
+      const response = await requestCopytradeAdvisor(advisorContext);
+      const updatedAt = new Date().toISOString();
+      setAdvisorResult(response.analysis);
+      setAdvisorUpdatedAt(updatedAt);
+      localStorage.setItem(advisorStorageKey, JSON.stringify({ result: response.analysis, updatedAt }));
+    } catch (error) {
+      setAdvisorError(error instanceof Error ? error.message : 'OpenAI analizi alınamadı');
+    } finally {
+      setAdvisorLoading(false);
+    }
   };
 
   return (
@@ -569,6 +631,45 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         <p className="mt-3 text-[11px] text-muted-foreground">
           Not: Market adlarının sonundaki zaman damgası parçaları (örn. -1770746400) ve saat eki (örn. 1pm Et) normalize edilerek aynı strateji marketinde birleştirildi.
         </p>
+      </div>
+
+      <div className="glass-card p-4 mb-4">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2"><Bot className="w-4 h-4" /> OpenAI ChatGPT Analizi</h3>
+            <p className="text-xs text-muted-foreground">Mevcut wallet sayfası verileri context olarak gönderilir.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="px-3 py-1.5 text-xs rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-60"
+              onClick={runAdvisor}
+              disabled={advisorLoading}
+            >
+              {advisorLoading ? 'Gönderiliyor...' : 'OpenAI ile Analiz Et'}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-xs rounded bg-secondary/40 text-foreground border border-border/60 hover:bg-secondary/60 disabled:opacity-60"
+              onClick={runAdvisor}
+              disabled={advisorLoading}
+            >
+              Tekrar
+            </button>
+          </div>
+        </div>
+
+        {advisorUpdatedAt && (
+          <p className="text-[11px] text-muted-foreground mb-2">Son analiz: {formatBerlin(advisorUpdatedAt)}</p>
+        )}
+        {advisorError && <p className="text-xs text-destructive mb-2">{advisorError}</p>}
+        <div className="rounded-md border border-border/60 bg-background/40 p-3 min-h-[84px]">
+          {advisorResult ? (
+            <p className="text-sm text-foreground whitespace-pre-wrap">{advisorResult}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">Henüz analiz yok. Butona basınca güncel context ile otomatik gönderilir.</p>
+          )}
+        </div>
       </div>
 
       {/* Activity */}

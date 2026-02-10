@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { spawnSync } from "child_process";
 import { componentTagger } from "lovable-tagger";
+import type { IncomingMessage } from "http";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_EVENTS = 200;
@@ -11,6 +12,16 @@ const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
+const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
+const OPENAI_SYSTEM_INSTRUCTIONS = `Sen deneyimli bir risk yöneticisi + trade analisti gibi davranan bir asistansın.
+Görevin: Kullanıcının paylaştığı Polymarket trade geçmişini ve ilgili bağlamı analiz etmek ve
+kullanıcının bu trader'ı KOPYALARKEN izlemesi gereken yöntemi açık ve uygulanabilir şekilde önermek.
+- Özet (profil)
+- Kopyalama stratejisi (en az 3 ölçekleme yöntemi + artı/eksi)
+- Risk yönetimi + otomasyona uygun kural seti
+- Veri eksikse belirt, varsayım yapıyorsan açıkla
+Dil: Türkçe.`;
 
 type RawEvent = Record<string, unknown>;
 
@@ -319,6 +330,45 @@ const stopTracker = (address: string) => {
   runtimes.delete(normalizedAddress);
 };
 
+
+const readJsonBody = async <T>(req: IncomingMessage): Promise<T> => {
+  let rawBody = "";
+  await new Promise<void>((resolve) => {
+    req.on("data", (chunk) => {
+      rawBody += chunk.toString();
+    });
+    req.on("end", () => resolve());
+  });
+
+  return rawBody ? (JSON.parse(rawBody) as T) : ({} as T);
+};
+
+const extractResponseText = (payload: Record<string, unknown>): string => {
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
+
+  if (Array.isArray(payload.output)) {
+    const textChunks: string[] = [];
+
+    for (const item of payload.output) {
+      if (!item || typeof item !== "object") continue;
+      const content = (item as { content?: unknown }).content;
+      if (!Array.isArray(content)) continue;
+
+      for (const part of content) {
+        if (!part || typeof part !== "object") continue;
+        const maybeText = (part as { text?: unknown }).text;
+        if (typeof maybeText === "string") textChunks.push(maybeText);
+      }
+    }
+
+    if (textChunks.length > 0) return textChunks.join("\n").trim();
+  }
+
+  return "Model boş yanıt döndürdü.";
+};
+
 const createPolymarketTrackerPlugin = (): Plugin => ({
   name: "polymarket-local-tracker",
   configureServer(server) {
@@ -338,30 +388,14 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
 
       try {
         if (req.method === "POST" && req.url === "/api/tracker/profile") {
-          let rawBody = "";
-          await new Promise<void>((resolve) => {
-            req.on("data", (chunk) => {
-              rawBody += chunk.toString();
-            });
-            req.on("end", () => resolve());
-          });
-
-          const parsed = rawBody ? (JSON.parse(rawBody) as { profileUrl?: string }) : {};
+          const parsed = await readJsonBody<{ profileUrl?: string }>(req);
           const profileData = resolveProfileFromUrl(parsed.profileUrl ?? "");
           sendJson(200, profileData);
           return;
         }
 
         if (req.method === "POST" && req.url === "/api/tracker/start") {
-          let rawBody = "";
-          await new Promise<void>((resolve) => {
-            req.on("data", (chunk) => {
-              rawBody += chunk.toString();
-            });
-            req.on("end", () => resolve());
-          });
-
-          const parsed = rawBody ? (JSON.parse(rawBody) as { address?: string }) : {};
+          const parsed = await readJsonBody<{ address?: string }>(req);
           const address = normalizeWallet(parsed.address ?? "");
           if (!address) {
             sendJson(400, { error: "address is required" });
@@ -399,6 +433,52 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           const events = readEvents(address);
           const stats = computeEventStats(events);
           sendJson(200, { address, events, stats });
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/api/tracker/copytrade-advisor") {
+          const parsed = await readJsonBody<{ context?: string }>(req);
+          const context = typeof parsed.context === "string" ? parsed.context.trim() : "";
+          if (!context) {
+            sendJson(400, { error: "context is required" });
+            return;
+          }
+
+          const userPrompt = `Bütçem yaklaşık $100.
+Bu trader'ı kopyalamak istiyorum.
+
+Lütfen verileri analiz et ve bana:
+1) Trader davranış özeti
+2) Kopyalama stratejisi (ölçekleme yöntemleri + net öneri)
+3) Risk kuralları + otomasyona uygun kural seti
+
+VERİLER:
+${context}`;
+
+          const openAiResponse = await fetch("https://api.openai.com/v1/responses", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: OPENAI_MODEL,
+              instructions: OPENAI_SYSTEM_INSTRUCTIONS,
+              input: userPrompt,
+            }),
+          });
+
+          if (!openAiResponse.ok) {
+            const errorText = await openAiResponse.text();
+            sendJson(openAiResponse.status, { error: errorText || "OpenAI request failed" });
+            return;
+          }
+
+          const payload = await openAiResponse.json() as Record<string, unknown>;
+          sendJson(200, {
+            model: OPENAI_MODEL,
+            analysis: extractResponseText(payload),
+          });
           return;
         }
 
