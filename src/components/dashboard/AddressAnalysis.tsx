@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save } from 'lucide-react';
 import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { getWalletEventsWithStats, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
 // Mock data
@@ -189,6 +189,27 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   }, [address.address]);
 
   const latest30 = useMemo(() => events.slice(0, 30), [events]);
+
+  const buyPriceShareData = useMemo(() => {
+    const grouped = new Map<number, number>();
+
+    for (const event of events) {
+      const side = (event.side ?? '').toUpperCase();
+      if (side !== 'BUY') continue;
+
+      const price = toNumber(event.price);
+      const share = toNumber(event.size);
+
+      if (!Number.isFinite(price) || !Number.isFinite(share) || share <= 0 || price < 0 || price > 1) continue;
+
+      const centPrice = Number(price.toFixed(2));
+      grouped.set(centPrice, (grouped.get(centPrice) ?? 0) + share);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([price, share]) => ({ price, share }))
+      .sort((a, b) => a.price - b.price);
+  }, [events]);
 
   const stats = useMemo(() => {
     if (backendStats) {
@@ -383,17 +404,37 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         <div className="glass-card p-4">
           <h3 className="text-sm font-semibold text-foreground mb-3">Bakiye Grafiği (30 gün)</h3>
           <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="balanceGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(174, 72%, 50%)" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="hsl(174, 72%, 50%)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+            <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }} axisLine={false} tickLine={false} domain={['auto', 'auto']} />
+              <XAxis
+                type="number"
+                dataKey="price"
+                name="Price"
+                domain={[0, 1]}
+                tickCount={11}
+                tickFormatter={(value) => Number(value).toFixed(2)}
+                tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                type="number"
+                dataKey="share"
+                name="Share"
+                tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+                axisLine={false}
+                tickLine={false}
+                domain={[0, 'auto']}
+              />
               <Tooltip
+                formatter={(value, name) => {
+                  if (name === 'Price') {
+                    return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 2 }), 'Price'];
+                  }
+
+                  return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 6 }), 'Share'];
+                }}
+                labelFormatter={() => 'BUY'}
                 contentStyle={{
                   backgroundColor: 'hsl(220, 18%, 10%)',
                   border: '1px solid hsl(220, 14%, 22%)',
@@ -401,9 +442,17 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                   fontSize: '12px',
                   color: 'hsl(210, 20%, 92%)',
                 }}
+                labelStyle={{ color: 'hsl(210, 20%, 92%)' }}
+                itemStyle={{ color: 'hsl(210, 20%, 92%)' }}
               />
-              <Area type="monotone" dataKey="balance" stroke="hsl(174, 72%, 50%)" fill="url(#balanceGrad)" strokeWidth={2} />
-            </AreaChart>
+              <Scatter
+                data={buyPriceShareData}
+                fill="hsl(174, 72%, 50%)"
+                line={{ stroke: 'hsl(174, 72%, 50%)', strokeWidth: 1.5 }}
+                lineType="joint"
+                shape={(props: { cx?: number; cy?: number }) => <circle cx={props.cx ?? 0} cy={props.cy ?? 0} r={2.5} />}
+              />
+            </ScatterChart>
           </ResponsiveContainer>
         </div>
 
