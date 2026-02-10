@@ -9,6 +9,7 @@ export default function AddAddressTab() {
   const [profileUrl, setProfileUrl] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [newCategory, setNewCategory] = useState('');
+  const [note, setNote] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -45,6 +46,7 @@ export default function AddAddressTab() {
       }
 
       addAddress(normalizedAddress, cat, {
+        note: note.trim() || undefined,
         profileUrl: profileUrl.trim(),
         username: resolvedProfile.username ?? undefined,
         trades: typeof resolvedProfile.trades === 'number' ? resolvedProfile.trades : undefined,
@@ -64,6 +66,7 @@ export default function AddAddressTab() {
       setProfileUrl('');
       setSelectedCategory('');
       setNewCategory('');
+      setNote('');
       setIsAddingCategory(false);
       toast.success('Profil başarıyla eklendi!');
     } catch (error) {
@@ -150,6 +153,19 @@ export default function AddAddressTab() {
               className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-accent/30 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30 text-sm transition-all animate-fade-in"
             />
           )}
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+            Cüzdan Notu <span className="text-muted-foreground text-xs">(Opsiyonel)</span>
+          </label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Bu cüzdan hakkında kısa notlar..."
+            rows={3}
+            className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 text-sm transition-all resize-y"
+          />
         </div>
 
         <button
