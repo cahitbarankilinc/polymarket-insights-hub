@@ -156,6 +156,11 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   <p className="text-[10px] text-muted-foreground/60 mt-1">
                     Eklendi: {addr.addedAt.toLocaleDateString('tr-TR')}
                   </p>
+                  {addr.note && (
+                    <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">
+                      Not: {addr.note}
+                    </p>
+                  )}
                   {trackerMap[addr.address.toLowerCase()] && (
                     <p className="text-[10px] text-emerald-400/90 mt-1">
                       {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •

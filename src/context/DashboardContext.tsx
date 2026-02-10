@@ -5,6 +5,7 @@ export interface TrackedAddress {
   address: string;
   category: string;
   addedAt: Date;
+  note?: string;
   label?: string;
   profileUrl?: string;
   username?: string;
@@ -35,6 +36,7 @@ interface DashboardContextType {
   categories: string[];
   paperTrades: PaperTrade[];
   addAddress: (address: string, category: string, profile?: Partial<TrackedAddress>) => void;
+  updateAddressNote: (id: string, note: string) => void;
   removeAddress: (id: string) => void;
   addCategory: (category: string) => void;
   addToPaperTrade: (addressId: string) => void;
@@ -51,7 +53,7 @@ const randomPrice = () => +(Math.random() * 100000 + 20000).toFixed(2);
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const [addresses, setAddresses] = useState<TrackedAddress[]>([
-    { id: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', addedAt: new Date('2025-01-15'), label: 'Whale Alpha' },
+    { id: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', addedAt: new Date('2025-01-15'), label: 'Whale Alpha', note: 'Trend marketlerinde agresif BUY yapıyor.' },
     { id: '2', address: '0x8f9f96f5f4f9054f0f665f2f344ecb9ed9f2f9e9', category: 'Smart Money', addedAt: new Date('2025-02-01'), label: 'SM Trader' },
     { id: '3', address: '0x7d7f7f7c1a2f40f4a0c8e510af4f558b5756fa0d', category: 'Whales', addedAt: new Date('2025-01-20') },
     { id: '4', address: '0x4ea5d5e7f8e8ce0c8f9f675e7e5fb42f6a2f7e24', category: 'Market Makers', addedAt: new Date('2025-01-28') },
@@ -75,6 +77,14 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   const removeAddress = useCallback((id: string) => {
     setAddresses(prev => prev.filter(a => a.id !== id));
+  }, []);
+
+  const updateAddressNote = useCallback((id: string, note: string) => {
+    setAddresses(prev => prev.map((address) => (
+      address.id === id
+        ? { ...address, note: note.trim() || undefined }
+        : address
+    )));
   }, []);
 
   const addCategory = useCallback((category: string) => {
@@ -112,7 +122,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   return (
     <DashboardContext.Provider value={{
       addresses, categories, paperTrades,
-      addAddress, removeAddress, addCategory, addToPaperTrade,
+      addAddress, updateAddressNote, removeAddress, addCategory, addToPaperTrade,
       startPaperTrade, closePaperTrade,
     }}>
       {children}

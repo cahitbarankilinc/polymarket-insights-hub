@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { TrackedAddress } from '@/context/DashboardContext';
+import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save } from 'lucide-react';
+import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { getWalletEventsWithStats, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
@@ -102,10 +102,43 @@ const formatDecimal = (value: number | undefined) => {
   return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
 };
 
+const normalizeMarketName = (market: string | null | undefined) => {
+  if (!market) return 'Unknown market';
+
+  const trimmed = market.trim();
+  if (!trimmed) return 'Unknown market';
+
+  // Human-readable isimlerde sondaki saat parçasını kaldır:
+  // "Bitcoin Up Or Down February 10 1pm Et" -> "Bitcoin Up Or Down February 10"
+  const withoutPmEtSuffix = trimmed
+    .replace(/\s+\d{1,2}\s*(?:am|pm)\s+et$/i, '')
+    .trim();
+
+  // Slug formatında zaman damgası parçasını kaldır:
+  // "btc-updown-15m-1770746400" -> "btc-updown-15m"
+  const slugTokens = withoutPmEtSuffix.split('-').filter(Boolean);
+  while (slugTokens.length > 1 && /^\d{9,13}$/.test(slugTokens[slugTokens.length - 1])) {
+    slugTokens.pop();
+  }
+
+  return (slugTokens.join('-') || withoutPmEtSuffix).replace(/\s+/g, ' ').trim();
+};
+
+const normalizeMarketKey = (market: string | null | undefined) => {
+  const normalizedName = normalizeMarketName(market).toLowerCase();
+  return normalizedName || 'unknown-market';
+};
+
 export default function AddressAnalysis({ address, onBack }: Props) {
+  const { updateAddressNote } = useDashboard();
   const isPositive = (address.pnl ?? 0) >= 0;
   const [events, setEvents] = useState<WalletTrackerEvent[]>([]);
   const [backendStats, setBackendStats] = useState<WalletTrackerStats | null>(null);
+  const [noteDraft, setNoteDraft] = useState(address.note ?? '');
+
+  useEffect(() => {
+    setNoteDraft(address.note ?? '');
+  }, [address.id, address.note]);
 
   useEffect(() => {
     let active = true;
@@ -164,6 +197,35 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     return { total, last24h, buyTodayUsd, sellTodayUsd };
   }, [backendStats, events]);
 
+  const topMarketSpend = useMemo(() => {
+    const marketMap = new Map<string, { label: string; buyUsd: number; totalUsd: number; tradeCount: number }>();
+
+    for (const event of events) {
+      const key = normalizeMarketKey(event.market);
+      const label = normalizeMarketName(event.market);
+      const side = (event.side ?? '').toUpperCase();
+      const usdValue = toNumber(event.value_usd);
+      const row = marketMap.get(key) ?? { label, buyUsd: 0, totalUsd: 0, tradeCount: 0 };
+
+      row.tradeCount += 1;
+      row.totalUsd += usdValue;
+      if (side === 'BUY') {
+        row.buyUsd += usdValue;
+      }
+
+      marketMap.set(key, row);
+    }
+
+    return Array.from(marketMap.entries())
+      .map(([key, value]) => ({ key, ...value }))
+      .sort((a, b) => b.buyUsd - a.buyUsd || b.totalUsd - a.totalUsd)
+      .slice(0, 10);
+  }, [events]);
+
+  const handleSaveNote = () => {
+    updateAddressNote(address.id, noteDraft);
+  };
+
   return (
     <div className="animate-slide-up">
       {/* Back */}
@@ -194,6 +256,25 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             </p>
           </div>
         </div>
+      </div>
+
+      <div className="glass-card p-4 mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-foreground">Cüzdan Notu</h3>
+          <button
+            onClick={handleSaveNote}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-all"
+          >
+            <Save className="w-3.5 h-3.5" /> Kaydet
+          </button>
+        </div>
+        <textarea
+          value={noteDraft}
+          onChange={(e) => setNoteDraft(e.target.value)}
+          placeholder="Bu wallet için gözlemlerini not al..."
+          rows={3}
+          className="w-full px-3 py-2 rounded-lg bg-secondary/40 border border-border/40 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 resize-y"
+        />
       </div>
 
       {/* Profile Stats */}
@@ -282,6 +363,42 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </div>
+
+      <div className="glass-card p-4 mb-4">
+        <h3 className="text-sm font-semibold text-foreground mb-3">En Çok Harcama Yapılan İlk 10 Market</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="text-left text-muted-foreground border-b border-border/40">
+                <th className="py-2 pr-2 text-xs font-medium">#</th>
+                <th className="py-2 pr-2 text-xs font-medium">Market</th>
+                <th className="py-2 pr-2 text-xs font-medium text-right">BUY USD</th>
+                <th className="py-2 pr-2 text-xs font-medium text-right">Toplam USD</th>
+                <th className="py-2 text-xs font-medium text-right">İşlem</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topMarketSpend.map((market, index) => (
+                <tr key={market.key} className="border-b border-border/20 last:border-0">
+                  <td className="py-2 pr-2 text-muted-foreground">{index + 1}</td>
+                  <td className="py-2 pr-2 text-foreground">{market.label}</td>
+                  <td className="py-2 pr-2 text-right font-medium text-accent">{formatUsd(market.buyUsd)}</td>
+                  <td className="py-2 pr-2 text-right text-foreground">{formatUsd(market.totalUsd)}</td>
+                  <td className="py-2 text-right text-foreground">{market.tradeCount}</td>
+                </tr>
+              ))}
+              {topMarketSpend.length === 0 && (
+                <tr>
+                  <td className="py-4 text-center text-muted-foreground" colSpan={5}>Henüz market bazlı işlem verisi yok</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Not: Market adlarında sondaki zaman parçaları (örn. "1pm Et" veya "-1770746400") kaldırılarak aynı strateji marketleri tek başlıkta birleştirilir.
+        </p>
       </div>
 
       {/* Activity */}
