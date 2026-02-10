@@ -53,6 +53,31 @@ const toDateFromSeen = (seenAt: string) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const toTimestampMs = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return value > 1e12 ? value : value * 1000;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      if (!Number.isFinite(numeric)) return null;
+      return numeric > 1e12 ? numeric : numeric * 1000;
+    }
+
+    const parsed = new Date(trimmed).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  return null;
+};
+
 const formatBerlin = (seenAt: string) => {
   const parsed = toDateFromSeen(seenAt);
   if (!parsed) return '-';
@@ -60,9 +85,9 @@ const formatBerlin = (seenAt: string) => {
 };
 
 const toEventDate = (event: WalletTrackerEvent) => {
-  const parsedEventTime = event.event_time ? new Date(event.event_time) : null;
-  if (parsedEventTime && !Number.isNaN(parsedEventTime.getTime())) return parsedEventTime;
-  return toDateFromSeen(event.seen_at_utc);
+  const eventTimeMs = toTimestampMs(event.event_time) ?? toTimestampMs(event.seen_at_utc);
+  if (eventTimeMs === null) return null;
+  return new Date(eventTimeMs);
 };
 
 const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 6 })}`;

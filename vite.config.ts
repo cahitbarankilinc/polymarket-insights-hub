@@ -60,6 +60,31 @@ const toFloat = (value: unknown): number | null => {
 
 const normalizeWallet = (address: string) => address.trim().toLowerCase();
 
+const toTimestampMs = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    return value > 1e12 ? value : value * 1000;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      if (!Number.isFinite(numeric)) return null;
+      return numeric > 1e12 ? numeric : numeric * 1000;
+    }
+
+    const parsed = new Date(trimmed).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  return null;
+};
+
 const walletDir = (address: string) => path.join(TRACKING_ROOT, normalizeWallet(address));
 const stateFile = (address: string) => path.join(walletDir(address), "state.json");
 const eventsFile = (address: string) => path.join(walletDir(address), "events.ndjson");
@@ -114,9 +139,8 @@ const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
   let sellTodayUsd = 0;
 
   for (const event of events) {
-    const referenceTime = event.event_time ?? event.seen_at_utc;
-    const eventTime = new Date(referenceTime).getTime();
-    if (Number.isNaN(eventTime) || now - eventTime > last24HoursMs) continue;
+    const eventTime = toTimestampMs(event.event_time) ?? toTimestampMs(event.seen_at_utc);
+    if (eventTime === null || now - eventTime > last24HoursMs) continue;
 
     last24h += 1;
     const value = event.value_usd ?? 0;
@@ -157,9 +181,11 @@ const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): Normalize
   const size = toFloat(raw.size ?? raw.amount ?? raw.shares);
   const valueFromEvent = toFloat(raw.value ?? raw.valueUSD);
 
+  const normalizedEventTime = toTimestampMs(raw.timestamp ?? raw.createdAt ?? raw.time ?? raw.eventTime);
+
   return {
     seen_at_utc: utcNowIso(),
-    event_time: (raw.timestamp ?? raw.createdAt ?? raw.time ?? raw.eventTime ?? null) as string | null,
+    event_time: normalizedEventTime === null ? null : new Date(normalizedEventTime).toISOString(),
     type: (raw.type ?? raw.eventType ?? (source === "trades" ? "TRADE" : null)) as string | null,
     side: (raw.side ?? raw.action ?? null) as string | null,
     market: (raw.question ?? raw.slug ?? raw.market ?? raw.marketId ?? null) as string | null,
