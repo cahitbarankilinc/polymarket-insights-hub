@@ -96,19 +96,20 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const stats = useMemo(() => {
     const now = Date.now();
     const last24HoursMs = 24 * 60 * 60 * 1000;
-
-    const total = events.length;
-    const last24h = events.filter((event) => {
+    const recentEvents = events.filter((event) => {
       const seen = toDateFromSeen(event.seen_at_utc);
       if (!seen) return false;
       return now - seen.getTime() <= last24HoursMs;
-    }).length;
+    });
 
-    const incoming = events
+    const total = events.length;
+    const last24h = recentEvents.length;
+
+    const incoming = recentEvents
       .filter((event) => (event.side ?? '').toUpperCase() === 'BUY')
       .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
 
-    const outgoing = events
+    const outgoing = recentEvents
       .filter((event) => (event.side ?? '').toUpperCase() === 'SELL')
       .reduce((sum, event) => sum + toNumber(event.value_usd), 0);
 
@@ -152,8 +153,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         {[
           { label: 'Toplam İşlem', value: String(stats.total), icon: Activity },
           { label: 'Son 24s', value: String(stats.last24h), icon: Clock },
-          { label: 'Gelen', value: formatUsd(stats.incoming), icon: ArrowDownRight, color: 'text-accent' },
-          { label: 'Giden', value: formatUsd(stats.outgoing), icon: ArrowUpRight, color: 'text-warning' },
+          { label: 'BUY Today', value: formatUsd(stats.incoming), icon: ArrowDownRight, color: 'text-accent' },
+          { label: 'SELL Today', value: formatUsd(stats.outgoing), icon: ArrowUpRight, color: 'text-warning' },
         ].map((stat, i) => (
           <div key={i} className="stat-card">
             <div className="flex items-center gap-2 mb-2">
@@ -245,9 +246,9 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 </div>
                 <div className="text-right">
                   <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
-                    P: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}S: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}V: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
+                    Price: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}Share: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                    {' '}USD: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
                   </p>
                   <p className="text-[10px] text-muted-foreground">{formatBerlin(event.seen_at_utc)}</p>
                 </div>
