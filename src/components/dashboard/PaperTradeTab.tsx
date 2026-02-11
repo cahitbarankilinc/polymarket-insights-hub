@@ -199,6 +199,17 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
   const activeTrades = tradesWithAddress.filter(t => t.status === 'active');
   const closedTrades = tradesWithAddress.filter(t => t.status === 'closed');
+  const runningSessions = useMemo(() => Object.entries(copySessions)
+    .filter(([, session]) => session.status !== 'idle')
+    .map(([addressId, session]) => {
+      const wallet = addresses.find((addr) => addr.id === addressId);
+      return {
+        addressId,
+        session,
+        walletName: wallet?.username || wallet?.label || wallet?.address || addressId,
+        walletAddress: wallet?.address,
+      };
+    }), [addresses, copySessions]);
 
   const analysisTrades = useMemo(
     () => tradesWithAddress.filter((trade) => trade.addressId === analysisAddressId),
@@ -615,6 +626,40 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             </div>
           </div>
 
+          {runningSessions.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
+              <div className="space-y-2">
+                {runningSessions.map(({ addressId, session, walletName, walletAddress }) => {
+                  const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
+                  const statusLabel = session.status === 'syncing' ? 'SENKRONİZE EDİLİYOR' : 'TAKİP AKTİF';
+                  return (
+                    <div key={addressId} className="glass-card p-4 border border-primary/20">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-xs font-semibold text-foreground">{walletName}</p>
+                          <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan takip ediliyor. Yeni aktivite geldiğinde trade otomatik oluşacak.</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-primary/15 text-primary">{statusLabel}</span>
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
+                          <button
+                            type="button"
+                            onClick={() => openAnalysis(addressId)}
+                            className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
+                          >
+                            Analize Git
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {closedTrades.length > 0 && (
             <div>
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Kapatılan Tradeler ({closedTrades.length})</h3>
@@ -640,7 +685,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       {view === 'analysis' && (
         <div className="glass-card p-4 mb-6">
           {!analysisStats ? (
-            <p className="text-sm text-muted-foreground">Bu cüzdan için analiz verisi bulunamadı.</p>
+            <div className="text-center py-2">
+              <h3 className="text-sm font-semibold text-foreground mb-2">Copy Trade Analizi • {analysisWalletName || 'Seçili cüzdan'}</h3>
+              <p className="text-sm text-muted-foreground">Henüz bu cüzdan için oluşmuş trade yok. Takip aktifse yeni işlem geldiğinde burada görünecek.</p>
+            </div>
           ) : (
             <>
               <h3 className="text-sm font-semibold text-foreground mb-3">Copy Trade Analizi • {analysisWalletName}</h3>
