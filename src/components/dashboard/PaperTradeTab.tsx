@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Play, X, TrendingUp, TrendingDown, Wallet, ChevronUp, ChevronDown } from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
+import { getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
 import { toast } from 'sonner';
 
 const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: string }> = [
@@ -35,6 +36,30 @@ const defaultConfig: WalletModeConfig = {
   direction: 'long',
 };
 
+const parseNumberFromText = (value?: string | null): number | undefined => {
+  if (!value) return undefined;
+  const match = value.match(/[-+]?\d[\d.,]*/g);
+  if (!match?.length) return undefined;
+  const raw = match[match.length - 1];
+  const normalized = raw.includes(',')
+    ? raw.replace(/\./g, '').replace(',', '.')
+    : raw.replace(/,/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'short' | undefined => {
+  if (!event) return undefined;
+  const outcome = (event.outcome ?? '').toLowerCase();
+  if (outcome.includes('down') || outcome.includes('no')) return 'short';
+  if (outcome.includes('up') || outcome.includes('yes')) return 'long';
+
+  const side = (event.side ?? '').toLowerCase();
+  if (side === 'sell') return 'short';
+  if (side === 'buy') return 'long';
+  return undefined;
+};
+
 interface PaperTradePrefill {
   sourceTradeUsd?: number;
   sharePrice?: number;
@@ -52,6 +77,49 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [budgetAmount, setBudgetAmount] = useState(paperBudget.amount > 0 ? String(paperBudget.amount) : '1000');
   const [virtualFreeBalance, setVirtualFreeBalance] = useState('1000');
   const [walletConfigs, setWalletConfigs] = useState<Record<string, WalletModeConfig>>({});
+
+  const loadAutoConfig = async (addressId: string): Promise<WalletModeConfig | null> => {
+    const targetAddress = addresses.find((address) => address.id === addressId);
+    if (!targetAddress) return null;
+
+    const baseConfig = walletConfigs[addressId] || defaultConfig;
+
+    try {
+      const payload = await getWalletEventsWithStats(targetAddress.address);
+      const latestEvent = payload.events[0];
+      const nextConfig: WalletModeConfig = {
+        ...baseConfig,
+        sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
+        sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
+        fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
+        direction: resolveDirection(latestEvent) ?? baseConfig.direction,
+        leaderFreeBalance: String(
+          parseNumberFromText(targetAddress.polygonscanTopTotalValText)
+          ?? baseConfig.leaderFreeBalance,
+        ),
+      };
+
+      setWalletConfigs((prev) => ({
+        ...prev,
+        [addressId]: nextConfig,
+      }));
+      return nextConfig;
+    } catch {
+      const nextConfig: WalletModeConfig = {
+        ...baseConfig,
+        leaderFreeBalance: String(
+          parseNumberFromText(targetAddress.polygonscanTopTotalValText)
+          ?? baseConfig.leaderFreeBalance,
+        ),
+      };
+
+      setWalletConfigs((prev) => ({
+        ...prev,
+        [addressId]: nextConfig,
+      }));
+      return nextConfig;
+    }
+  };
 
   useEffect(() => {
     if (preselectedId) {
@@ -90,6 +158,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       }));
     }
   }, [setupId, prefill]);
+
+  useEffect(() => {
+    if (!setupId) return;
+    loadAutoConfig(setupId);
+  }, [setupId, addresses]);
 
   const currentConfig = setupId ? (walletConfigs[setupId] || defaultConfig) : defaultConfig;
 
@@ -145,22 +218,24 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     }
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (!setupId) {
       toast.error('Önce bir cüzdan seçin');
       return;
     }
-    const tradeUsd = calculateTradeUsd(currentConfig);
+
+    const latestConfig = await loadAutoConfig(setupId) || currentConfig;
+    const tradeUsd = calculateTradeUsd(latestConfig);
     if (tradeUsd <= 0) {
       toast.error('Trade tutarı 0 dan büyük olmalı');
       return;
     }
 
     const result = startPaperTrade(setupId, {
-      strategy: currentConfig.strategy || 'Copy Trading',
-      direction: currentConfig.direction,
+      strategy: latestConfig.strategy || 'Copy Trading',
+      direction: latestConfig.direction,
       spendUsd: tradeUsd,
-      copyMode: currentConfig.mode,
+      copyMode: latestConfig.mode,
     });
 
     if (!result.ok) {
@@ -329,13 +404,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun trade tutarı ($)</label>
-                  <input type="number" value={currentConfig.sourceTradeUsd} onChange={(e) => setConfig({ sourceTradeUsd: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                  <input type="number" value={currentConfig.sourceTradeUsd} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
                 </div>
 
                 {currentConfig.mode === 'proportional' && (
                   <div>
                     <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun free balance ($)</label>
-                    <input type="number" value={currentConfig.leaderFreeBalance} onChange={(e) => setConfig({ leaderFreeBalance: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                    <input type="number" value={currentConfig.leaderFreeBalance} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
                   </div>
                 )}
 
@@ -357,18 +432,18 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                   <>
                     <div>
                       <label className="text-xs font-medium text-muted-foreground mb-1 block">Sabit share</label>
-                      <input type="number" value={currentConfig.fixedShares} onChange={(e) => setConfig({ fixedShares: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                      <input type="number" value={currentConfig.fixedShares} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
                     </div>
                     <div>
                       <label className="text-xs font-medium text-muted-foreground mb-1 block">Share fiyatı ($)</label>
-                      <input type="number" value={currentConfig.sharePrice} onChange={(e) => setConfig({ sharePrice: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                      <input type="number" value={currentConfig.sharePrice} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
                     </div>
                   </>
                 )}
 
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Yön</label>
-                  <select value={currentConfig.direction} onChange={(e) => setConfig({ direction: e.target.value as 'long' | 'short' })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
+                  <select value={currentConfig.direction} disabled className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80">
                     <option value="long">Up</option>
                     <option value="short">Down</option>
                   </select>
