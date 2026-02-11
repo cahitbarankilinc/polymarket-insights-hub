@@ -1,33 +1,136 @@
-import { useState } from 'react';
-import { Play, X, TrendingUp, TrendingDown, BarChart3, Wallet } from 'lucide-react';
-import { useDashboard } from '@/context/DashboardContext';
+import { useEffect, useMemo, useState } from 'react';
+import { Play, X, TrendingUp, TrendingDown, Wallet, ChevronUp, ChevronDown } from 'lucide-react';
+import { useDashboard, type CopyMode } from '@/context/DashboardContext';
 import { toast } from 'sonner';
 
-const STRATEGIES = ['Mirror Trading', 'Trend Following', 'Counter Trade', 'DCA Bot', 'Breakout Trading'];
-const DIRECTIONS: Array<{ value: 'long' | 'short'; label: string }> = [
-  { value: 'long', label: '🟢 Long' },
-  { value: 'short', label: '🔴 Short' },
+const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: string }> = [
+  { value: 'notional', label: '1:1 Notional Copy', description: 'Onun aldığı USD kadar al.' },
+  { value: 'proportional', label: 'Proportional to Free Balance', description: 'Boştaki bakiyeye göre oranla.' },
+  { value: 'multiplier', label: 'Multiplier Mode', description: 'Onun trade tutarı × k.' },
+  { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Her işlemde sabit USD.' },
+  { value: 'fixed-shares', label: 'Fixed Shares per Trade', description: 'Her işlemde sabit share.' },
 ];
 
-export default function PaperTradeTab({ preselectedId }: { preselectedId?: string | null }) {
-  const { addresses, paperTrades, startPaperTrade, closePaperTrade } = useDashboard();
-  const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
-  const [strategy, setStrategy] = useState('');
-  const [direction, setDirection] = useState<'long' | 'short'>('long');
-  const [amount, setAmount] = useState('0.1');
+interface WalletModeConfig {
+  mode: CopyMode;
+  sourceTradeUsd: string;
+  leaderFreeBalance: string;
+  multiplier: string;
+  fixedAmount: string;
+  fixedShares: string;
+  sharePrice: string;
+  strategy: string;
+  direction: 'long' | 'short';
+}
 
-  const paperTradeAddresses = addresses; // all addresses available for paper trade
+const defaultConfig: WalletModeConfig = {
+  mode: 'notional',
+  sourceTradeUsd: '100',
+  leaderFreeBalance: '1000',
+  multiplier: '1',
+  fixedAmount: '20',
+  fixedShares: '50',
+  sharePrice: '1',
+  strategy: 'Copy Trading',
+  direction: 'long',
+};
+
+export default function PaperTradeTab({ preselectedId }: { preselectedId?: string | null }) {
+  const { addresses, paperTrades, startPaperTrade, closePaperTrade, paperBudget, setPaperBudget } = useDashboard();
+  const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
+  const [collapsed, setCollapsed] = useState(false);
+  const [budgetMode, setBudgetMode] = useState<'unlimited' | 'limited'>(paperBudget.mode);
+  const [budgetType, setBudgetType] = useState<'daily' | 'total'>(paperBudget.type);
+  const [budgetAmount, setBudgetAmount] = useState(paperBudget.amount > 0 ? String(paperBudget.amount) : '1000');
+  const [virtualFreeBalance, setVirtualFreeBalance] = useState('1000');
+  const [walletConfigs, setWalletConfigs] = useState<Record<string, WalletModeConfig>>({});
+
+  useEffect(() => {
+    if (preselectedId) {
+      setSetupId(preselectedId);
+      setCollapsed(false);
+    }
+  }, [preselectedId]);
+
+  const currentConfig = setupId ? (walletConfigs[setupId] || defaultConfig) : defaultConfig;
+
+  const myDynamicFreeBalance = useMemo(() => {
+    if (paperBudget.mode === 'limited') {
+      return paperBudget.remaining;
+    }
+    return parseFloat(virtualFreeBalance) || 0;
+  }, [paperBudget.mode, paperBudget.remaining, virtualFreeBalance]);
+
+  const setConfig = (patch: Partial<WalletModeConfig>) => {
+    if (!setupId) return;
+    setWalletConfigs(prev => ({
+      ...prev,
+      [setupId]: {
+        ...(prev[setupId] || defaultConfig),
+        ...patch,
+      },
+    }));
+  };
+
+  const applyBudget = () => {
+    const amount = parseFloat(budgetAmount) || 0;
+    setPaperBudget({
+      mode: budgetMode,
+      type: budgetType,
+      amount,
+    });
+    toast.success('Bütçe ayarları güncellendi');
+  };
+
+  const calculateTradeUsd = (config: WalletModeConfig) => {
+    const sourceTradeUsd = parseFloat(config.sourceTradeUsd) || 0;
+    const leaderFree = parseFloat(config.leaderFreeBalance) || 1;
+    const multiplier = parseFloat(config.multiplier) || 1;
+    const fixedAmount = parseFloat(config.fixedAmount) || 0;
+    const fixedShares = parseFloat(config.fixedShares) || 0;
+    const sharePrice = parseFloat(config.sharePrice) || 1;
+
+    switch (config.mode) {
+      case 'notional':
+        return sourceTradeUsd;
+      case 'proportional':
+        return sourceTradeUsd * (myDynamicFreeBalance / Math.max(leaderFree, 0.0001));
+      case 'multiplier':
+        return sourceTradeUsd * multiplier;
+      case 'fixed-amount':
+        return fixedAmount;
+      case 'fixed-shares':
+        return fixedShares * sharePrice;
+      default:
+        return sourceTradeUsd;
+    }
+  };
 
   const handleStart = () => {
-    if (!setupId || !strategy) {
-      toast.error('Strateji seçmeniz gerekiyor');
+    if (!setupId) {
+      toast.error('Önce bir cüzdan seçin');
       return;
     }
-    startPaperTrade(setupId, strategy, direction, parseFloat(amount) || 0.1);
-    toast.success('Paper trade başlatıldı!');
-    setSetupId(null);
-    setStrategy('');
-    setAmount('0.1');
+    const tradeUsd = calculateTradeUsd(currentConfig);
+    if (tradeUsd <= 0) {
+      toast.error('Trade tutarı 0 dan büyük olmalı');
+      return;
+    }
+
+    const result = startPaperTrade(setupId, {
+      strategy: currentConfig.strategy || 'Copy Trading',
+      direction: currentConfig.direction,
+      spendUsd: tradeUsd,
+      copyMode: currentConfig.mode,
+    });
+
+    if (!result.ok) {
+      toast.error(result.reason || 'Paper trade başlatılamadı');
+      return;
+    }
+
+    toast.success('Paper copy trade başlatıldı!');
+    setCollapsed(true);
   };
 
   const activeTrades = paperTrades.filter(t => t.status === 'active');
@@ -38,111 +141,223 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-bold text-foreground">Paper Trading</h2>
-          <p className="text-xs text-muted-foreground">Risksiz strateji test ortamı</p>
+          <p className="text-xs text-muted-foreground">Bütçe + cüzdan bazlı copy trade test ortamı</p>
         </div>
       </div>
 
-      {/* Setup Modal */}
+      <div className="glass-card p-5 mb-6">
+        <h3 className="text-sm font-semibold text-foreground mb-4">Bütçe Yönetimi</h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-2 block">Bütçe Tipi</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setBudgetMode('unlimited')}
+                className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'unlimited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}
+              >
+                Sınırsız
+              </button>
+              <button
+                onClick={() => setBudgetMode('limited')}
+                className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'limited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}
+              >
+                Bütçe Tanımla
+              </button>
+            </div>
+          </div>
+
+          {budgetMode === 'limited' ? (
+            <>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">Bütçe Periyodu</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setBudgetType('daily')}
+                    className={`px-3 py-2 rounded-lg text-xs border ${budgetType === 'daily' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}
+                  >
+                    Günlük
+                  </button>
+                  <button
+                    onClick={() => setBudgetType('total')}
+                    className={`px-3 py-2 rounded-lg text-xs border ${budgetType === 'total' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}
+                  >
+                    Toplam
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">Bütçe Tutarı ($)</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={budgetAmount}
+                  onChange={(e) => setBudgetAmount(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-2 block">Sınırsız modda Free Balance</label>
+              <input
+                type="number"
+                min="0"
+                value={virtualFreeBalance}
+                onChange={(e) => setVirtualFreeBalance(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            Aktif kullanılabilir bakiye:{' '}
+            <span className="font-mono text-foreground">
+              {paperBudget.mode === 'limited' ? `$${paperBudget.remaining.toFixed(2)}` : `${myDynamicFreeBalance.toFixed(2)} (virtual)`}
+            </span>
+          </p>
+          <button
+            onClick={applyBudget}
+            className="px-4 py-2 rounded-lg text-xs font-semibold bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
+          >
+            Bütçeyi Uygula
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-6">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Takip edilen cüzdanlar</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {addresses.map(addr => (
+            <button
+              key={addr.id}
+              onClick={() => {
+                setSetupId(addr.id);
+                setCollapsed(false);
+              }}
+              className={`glass-card-hover p-3 text-left border ${setupId === addr.id ? 'border-primary/50 bg-primary/5' : 'border-border/20'}`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Wallet className="w-3.5 h-3.5 text-primary" />
+                <span className="text-sm font-medium text-foreground">{addr.label || addr.category}</span>
+              </div>
+              <p className="font-mono text-[10px] text-muted-foreground truncate">{addr.address}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {setupId && (
         <div className="glass-card p-5 mb-6 glow-border animate-fade-in">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-foreground">Trade Ayarları</h3>
-            <button onClick={() => setSetupId(null)} className="text-muted-foreground hover:text-foreground">
-              <X className="w-4 h-4" />
-            </button>
+            <h3 className="text-sm font-semibold text-foreground">Cüzdan Ayarları</h3>
+            <div className="flex gap-2 items-center">
+              <button
+                onClick={() => setCollapsed((prev) => !prev)}
+                className="text-xs px-2 py-1 rounded border border-border/30 text-muted-foreground hover:text-foreground"
+              >
+                {collapsed ? <><ChevronDown className="w-3 h-3 inline mr-1" />Genişlet</> : <><ChevronUp className="w-3 h-3 inline mr-1" />Küçült</>}
+              </button>
+              <button onClick={() => setSetupId(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           <p className="font-mono text-xs text-muted-foreground mb-4 truncate">
             {addresses.find(a => a.id === setupId)?.address}
           </p>
 
-          {/* Strategy */}
-          <div className="mb-4">
-            <label className="text-xs font-medium text-muted-foreground mb-2 block">Strateji</label>
-            <div className="flex flex-wrap gap-2">
-              {STRATEGIES.map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStrategy(s)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    strategy === s
-                      ? 'bg-primary/20 text-primary border border-primary/40'
-                      : 'bg-secondary/50 text-muted-foreground border border-border/30 hover:border-primary/20'
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
+          {!collapsed && (
+            <>
+              <div className="mb-4">
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">Kopya Modu (wallet bazlı)</label>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {COPY_MODE_OPTIONS.map(option => (
+                    <button
+                      key={option.value}
+                      onClick={() => setConfig({ mode: option.value })}
+                      className={`p-3 rounded-lg border text-left ${currentConfig.mode === option.value ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-secondary/30 border-border/30 text-muted-foreground'}`}
+                    >
+                      <p className="text-xs font-semibold">{option.label}</p>
+                      <p className="text-[10px] mt-1">{option.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          {/* Direction */}
-          <div className="mb-4">
-            <label className="text-xs font-medium text-muted-foreground mb-2 block">Yön</label>
-            <div className="flex gap-2">
-              {DIRECTIONS.map(d => (
-                <button
-                  key={d.value}
-                  onClick={() => setDirection(d.value)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex-1 ${
-                    direction === d.value
-                      ? d.value === 'long'
-                        ? 'bg-accent/15 text-accent border border-accent/30'
-                        : 'bg-destructive/15 text-destructive border border-destructive/30'
-                      : 'bg-secondary/50 text-muted-foreground border border-border/30'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
-          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun trade tutarı ($)</label>
+                  <input type="number" value={currentConfig.sourceTradeUsd} onChange={(e) => setConfig({ sourceTradeUsd: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                </div>
 
-          {/* Amount */}
-          <div className="mb-4">
-            <label className="text-xs font-medium text-muted-foreground mb-2 block">Miktar (BTC)</label>
-            <input
-              type="number"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              step="0.01"
-              min="0.001"
-              className="w-full px-4 py-2.5 rounded-lg bg-secondary/50 border border-border/30 text-sm text-foreground focus:outline-none focus:border-primary/40 font-mono transition-all"
-            />
-          </div>
+                {currentConfig.mode === 'proportional' && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun free balance ($)</label>
+                    <input type="number" value={currentConfig.leaderFreeBalance} onChange={(e) => setConfig({ leaderFreeBalance: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                  </div>
+                )}
+
+                {currentConfig.mode === 'multiplier' && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Multiplier k</label>
+                    <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                  </div>
+                )}
+
+                {currentConfig.mode === 'fixed-amount' && (
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Sabit miktar ($)</label>
+                    <input type="number" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                  </div>
+                )}
+
+                {currentConfig.mode === 'fixed-shares' && (
+                  <>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Sabit share</label>
+                      <input type="number" value={currentConfig.fixedShares} onChange={(e) => setConfig({ fixedShares: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Share fiyatı ($)</label>
+                      <input type="number" value={currentConfig.sharePrice} onChange={(e) => setConfig({ sharePrice: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Yön</label>
+                  <select value={currentConfig.direction} onChange={(e) => setConfig({ direction: e.target.value as 'long' | 'short' })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
+                    <option value="long">BUY (Long)</option>
+                    <option value="short">SELL (Short)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Etiket/Strateji</label>
+                  <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
+                </div>
+              </div>
+
+              <div className="mb-4 p-3 rounded-lg bg-secondary/20 border border-border/20">
+                <p className="text-xs text-muted-foreground">
+                  Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig).toFixed(2)}</span>
+                </p>
+              </div>
+            </>
+          )}
 
           <button
             onClick={handleStart}
             className="w-full py-3 rounded-lg font-semibold text-sm bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-all active:scale-[0.98]"
           >
-            <Play className="w-4 h-4 inline mr-2" /> Başlat
+            <Play className="w-4 h-4 inline mr-2" /> {addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan'} için Başlat
           </button>
         </div>
       )}
 
-      {/* Available Addresses */}
-      {!setupId && (
-        <div className="mb-6">
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Adresler</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {paperTradeAddresses.map(addr => (
-              <button
-                key={addr.id}
-                onClick={() => setSetupId(addr.id)}
-                className="glass-card-hover p-3 text-left"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <Wallet className="w-3.5 h-3.5 text-primary" />
-                  <span className="text-sm font-medium text-foreground">{addr.label || addr.category}</span>
-                </div>
-                <p className="font-mono text-[10px] text-muted-foreground truncate">{addr.address}</p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Active Trades */}
       <div className="mb-6">
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
           Aktif Tradeler ({activeTrades.length})
@@ -168,7 +383,7 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
                       {trade.direction.toUpperCase()}
                     </span>
                     <span className="text-xs font-medium text-foreground">{trade.strategy}</span>
-                    <span className="text-[10px] text-muted-foreground">{trade.category}</span>
+                    {trade.copyMode && <span className="text-[10px] text-muted-foreground">mode: {trade.copyMode}</span>}
                   </div>
                   <button
                     onClick={() => {
@@ -192,8 +407,8 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
                       <p className="text-sm font-mono font-medium text-foreground">${trade.currentPrice.toLocaleString()}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Miktar</p>
-                      <p className="text-sm font-mono font-medium text-foreground">{trade.amount} BTC</p>
+                      <p className="text-[10px] text-muted-foreground">Tutar</p>
+                      <p className="text-sm font-mono font-medium text-foreground">${(trade.spentUsd || 0).toFixed(2)}</p>
                     </div>
                   </div>
                   <div className="text-right">
@@ -212,7 +427,6 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
         </div>
       </div>
 
-      {/* Closed Trades */}
       {closedTrades.length > 0 && (
         <div>
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
