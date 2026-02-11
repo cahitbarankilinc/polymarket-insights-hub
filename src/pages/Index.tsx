@@ -28,10 +28,18 @@ const Index = () => {
           }
         }} />
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-          {activeTab === 0 && <AddAddressTab />}
-          {activeTab === 1 && <TrackingTab onPaperTrade={handlePaperTrade} />}
-          {activeTab === 2 && <PaperTradeTab preselectedId={paperTradeId} prefill={paperTradePrefill} />}
-          {activeTab === 3 && <RealTradeTab />}
+          <section className={activeTab === 0 ? '' : 'hidden'}>
+            <AddAddressTab />
+          </section>
+          <section className={activeTab === 1 ? '' : 'hidden'}>
+            <TrackingTab onPaperTrade={handlePaperTrade} />
+          </section>
+          <section className={activeTab === 2 ? '' : 'hidden'}>
+            <PaperTradeTab preselectedId={paperTradeId} prefill={paperTradePrefill} />
+          </section>
+          <section className={activeTab === 3 ? '' : 'hidden'}>
+            <RealTradeTab />
+          </section>
         </main>
       </div>
     </DashboardProvider>
