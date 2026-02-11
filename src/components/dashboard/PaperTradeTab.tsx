@@ -97,6 +97,36 @@ interface CopySessionState {
 
 const TRACKER_POLL_MS = 7000;
 
+const toEventTimestamp = (event: WalletTrackerEvent): number => {
+  const candidates = [event.event_time, event.seen_at_utc];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const normalized = typeof candidate === 'string' ? candidate.trim() : String(candidate);
+    if (!normalized) continue;
+
+    if (/^\d+(?:\.\d+)?$/.test(normalized)) {
+      const numeric = Number(normalized);
+      if (!Number.isFinite(numeric)) continue;
+      return numeric > 1e12 ? numeric : numeric * 1000;
+    }
+
+    const parsed = new Date(normalized).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+
+  return 0;
+};
+
+const sortEventsOldestFirst = (events: WalletTrackerEvent[]) => (
+  [...events].sort((a, b) => toEventTimestamp(a) - toEventTimestamp(b))
+);
+
+const getLatestEvent = (events: WalletTrackerEvent[]) => {
+  if (!events.length) return undefined;
+  return sortEventsOldestFirst(events).at(-1);
+};
+
 const getEventKey = (event: WalletTrackerEvent): string => (
   event.tx_hash
   || `${event.seen_at_utc}:${event.market ?? ''}:${event.side ?? ''}:${event.value_usd ?? ''}:${event.price ?? ''}`
@@ -128,7 +158,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
-      const latestEvent = payload.events[0];
+      const latestEvent = getLatestEvent(payload.events);
       const nextConfig: WalletModeConfig = {
         ...baseConfig,
         sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
@@ -333,8 +363,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
-      const events = payload.events;
-      const latestEvent = events[0];
+      const events = sortEventsOldestFirst(payload.events);
+      const latestEvent = events.at(-1);
 
       setWalletConfigs((prev) => {
         const baseConfig = prev[addressId] || defaultConfig;
@@ -358,14 +388,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         return;
       }
 
-      const latestEventKey = getEventKey(events[0]);
+      const latestEventKey = getEventKey(events[events.length - 1]);
       if (!session.lastEventKey) {
         setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
         return;
       }
 
       const seenIndex = events.findIndex((event) => getEventKey(event) === session.lastEventKey);
-      const freshEvents = (seenIndex === -1 ? events : events.slice(0, seenIndex)).reverse();
+      const freshEvents = seenIndex === -1 ? events : events.slice(seenIndex + 1);
 
       if (freshEvents.length === 0) {
         setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
@@ -448,7 +478,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     if (!selectedAddress) return toast.error('Cüzdan bulunamadı');
 
     const payload = await getWalletEventsWithStats(selectedAddress.address);
-    const latestEventKey = payload.events[0] ? getEventKey(payload.events[0]) : undefined;
+    const latestEvent = getLatestEvent(payload.events);
+    const latestEventKey = latestEvent ? getEventKey(latestEvent) : undefined;
 
     setCopySessions((prev) => ({
       ...prev,
