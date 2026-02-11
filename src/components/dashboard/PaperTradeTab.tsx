@@ -72,6 +72,13 @@ const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'shor
   return undefined;
 };
 
+const resolveEventSide = (event: WalletTrackerEvent | undefined): 'BUY' | 'SELL' | undefined => {
+  if (!event?.side) return undefined;
+  const side = event.side.toUpperCase();
+  if (side === 'BUY' || side === 'SELL') return side;
+  return undefined;
+};
+
 interface PaperTradePrefill {
   sourceTradeUsd?: number;
   sharePrice?: number;
@@ -240,12 +247,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const tradesWithAddress = useMemo(() => paperTrades.map((trade) => {
     const wallet = addresses.find((addr) => addr.id === trade.addressId);
     const walletName = wallet?.username || wallet?.label || trade.address;
+    const spendUsd = trade.spentUsd || 0;
+    const isSellSide = trade.side === 'SELL';
     return {
       ...trade,
       walletName,
       marketLabel: `${trade.strategy || 'Copy Trading'} • ${walletName}`,
-      buyUsd: trade.spentUsd || 0,
-      sellUsd: trade.status === 'closed' ? trade.currentPrice * trade.amount : 0,
+      buyUsd: isSellSide ? 0 : spendUsd,
+      sellUsd: isSellSide ? spendUsd : (trade.status === 'closed' ? trade.currentPrice * trade.amount : 0),
     };
   }), [addresses, paperTrades]);
 
@@ -274,7 +283,9 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return wallet?.username || wallet?.label || wallet?.address || '';
   }, [addresses, analysisAddressId]);
 
-  const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades.map((trade) => ({
+  const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades
+    .filter((trade) => trade.side !== 'SELL')
+    .map((trade) => ({
     id: `${trade.id}-buy`,
     side: 'BUY',
     occurredAt: new Date(trade.startedAt),
@@ -285,13 +296,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   })), [analysisTrades]);
 
   const sellActivities = useMemo<TradeActivity[]>(() => analysisTrades
-    .filter((trade) => trade.status === 'closed')
+    .filter((trade) => trade.side === 'SELL' || trade.status === 'closed')
     .map((trade) => ({
       id: `${trade.id}-sell`,
       side: 'SELL',
-      occurredAt: new Date(trade.closedAt || trade.startedAt),
+      occurredAt: new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)),
       marketLabel: trade.marketLabel,
-      price: trade.currentPrice,
+      price: trade.side === 'SELL' ? trade.entryPrice : trade.currentPrice,
       share: trade.amount,
       usd: trade.sellUsd,
     })), [analysisTrades]);
@@ -309,15 +320,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     const totalSell = analysisTrades.reduce((sum, trade) => sum + trade.sellUsd, 0);
     const inGameMoney = analysisTrades.filter((trade) => trade.status === 'active').reduce((sum, trade) => sum + trade.buyUsd, 0);
 
-    const marketRows = new Map<string, { label: string; buyUsd: number; sellUsd: number; totalUsd: number; tradeCount: number }>();
-    for (const trade of analysisTrades) {
-      const row = marketRows.get(trade.marketLabel) || { label: trade.marketLabel, buyUsd: 0, sellUsd: 0, totalUsd: 0, tradeCount: 0 };
-      row.buyUsd += trade.buyUsd;
-      row.sellUsd += trade.sellUsd;
-      row.totalUsd += trade.buyUsd + trade.sellUsd;
-      row.tradeCount += 1;
-      marketRows.set(trade.marketLabel, row);
-    }
 
     return {
       startAt: new Date(startTimestamp),
@@ -327,7 +329,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       totalTransactions: myActivities.length,
       totalBuy,
       totalSell,
-      topMarkets: Array.from(marketRows.values()).sort((a, b) => b.totalUsd - a.totalUsd).slice(0, 10),
     };
   }, [analysisTrades, myActivities.length, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type]);
 
@@ -428,22 +429,34 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       let openedTrades = 0;
 
       for (const event of freshEvents) {
+        const eventSide = resolveEventSide(event);
+        if (!eventSide) continue;
+
+        const eventPrice = toPositiveNumber(event.price);
+        const eventSize = toPositiveNumber(event.size);
+        if (eventPrice <= 0 || eventSize <= 0) continue;
+
         const sourceTradeUsd = resolveEventTradeUsd(event, toPositiveNumber(cfg.sourceTradeUsd));
         const eventConfig: WalletModeConfig = {
           ...cfg,
           sourceTradeUsd: String(sourceTradeUsd || cfg.sourceTradeUsd),
-          sharePrice: String(event.price ?? cfg.sharePrice),
-          fixedShares: String(event.size ?? cfg.fixedShares),
+          sharePrice: String(eventPrice),
+          fixedShares: String(eventSize),
           direction: resolveDirection(event) ?? cfg.direction,
         };
         const tradeUsd = calculateTradeUsd(eventConfig);
         if (tradeUsd <= 0) continue;
 
+        const shouldUseSourceShares = eventConfig.mode === 'notional';
+
         const result = startPaperTrade(addressId, {
           strategy: eventConfig.strategy || 'Copy Trading',
-          direction: eventConfig.direction,
+          direction: eventSide === 'BUY' ? 'long' : 'short',
           spendUsd: tradeUsd,
           copyMode: eventConfig.mode,
+          entryPrice: eventPrice,
+          shareAmount: shouldUseSourceShares ? eventSize : undefined,
+          side: eventSide,
         });
 
         if (result.ok) openedTrades += 1;
@@ -787,15 +800,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                 </div>
               </div>
 
-              <div className="mb-4 p-3 rounded-lg border border-border/30 bg-secondary/10">
-                <h4 className="text-xs font-semibold text-foreground mb-2">En Çok Harcama Yapılan İlk 10 Market</h4>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[600px] text-xs">
-                    <thead><tr className="border-b border-border/30 text-muted-foreground"><th className="py-2 text-left">#</th><th className="py-2 text-left">Market</th><th className="py-2 text-right">BUY USD</th><th className="py-2 text-right">SELL USD</th><th className="py-2 text-right">Toplam USD</th><th className="py-2 text-right">İşlem</th></tr></thead>
-                    <tbody>{analysisStats.topMarkets.map((market, index) => <tr key={market.label} className="border-b border-border/20 last:border-0"><td className="py-2">{index + 1}</td><td className="py-2">{market.label}</td><td className="py-2 text-right text-accent">{formatUsd(market.buyUsd)}</td><td className="py-2 text-right text-warning">{formatUsd(market.sellUsd)}</td><td className="py-2 text-right">{formatUsd(market.totalUsd)}</td><td className="py-2 text-right">{market.tradeCount}</td></tr>)}</tbody>
-                  </table>
-                </div>
-              </div>
 
               <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
                 <h4 className="text-xs font-semibold text-foreground mb-2">Son Aktiviteler</h4>
