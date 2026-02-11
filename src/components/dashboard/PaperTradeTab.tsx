@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownRight,
   ArrowLeft,
@@ -90,6 +90,18 @@ interface TradeActivity {
   usd: number;
 }
 
+interface CopySessionState {
+  status: 'idle' | 'running' | 'syncing';
+  lastEventKey?: string;
+}
+
+const TRACKER_POLL_MS = 7000;
+
+const getEventKey = (event: WalletTrackerEvent): string => (
+  event.tx_hash
+  || `${event.seen_at_utc}:${event.market ?? ''}:${event.side ?? ''}:${event.value_usd ?? ''}:${event.price ?? ''}`
+);
+
 export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
   const { addresses, paperTrades, startPaperTrade, closePaperTrade, paperBudget, setPaperBudget } = useDashboard();
   const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
@@ -99,8 +111,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [budgetAmount, setBudgetAmount] = useState(paperBudget.amount > 0 ? String(paperBudget.amount) : '1000');
   const [virtualFreeBalance, setVirtualFreeBalance] = useState('1000');
   const [walletConfigs, setWalletConfigs] = useState<Record<string, WalletModeConfig>>({});
+  const [copySessions, setCopySessions] = useState<Record<string, CopySessionState>>({});
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
+  const copySessionsRef = useRef(copySessions);
+
+  useEffect(() => {
+    copySessionsRef.current = copySessions;
+  }, [copySessions]);
 
   const loadAutoConfig = async (addressId: string): Promise<WalletModeConfig | null> => {
     const targetAddress = addresses.find((address) => address.id === addressId);
@@ -290,28 +308,167 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     }
   };
 
+
+
+  const syncWalletCopyTrades = useCallback(async (addressId: string) => {
+    const targetAddress = addresses.find((address) => address.id === addressId);
+    if (!targetAddress) return;
+
+    setCopySessions((prev) => {
+      const current = prev[addressId];
+      if (!current || current.status === 'idle') return prev;
+      return { ...prev, [addressId]: { ...current, status: 'syncing' } };
+    });
+
+    try {
+      const payload = await getWalletEventsWithStats(targetAddress.address);
+      const events = payload.events;
+      const latestEvent = events[0];
+
+      setWalletConfigs((prev) => {
+        const baseConfig = prev[addressId] || defaultConfig;
+        return {
+          ...prev,
+          [addressId]: {
+            ...baseConfig,
+            sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
+            sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
+            fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
+            direction: resolveDirection(latestEvent) ?? baseConfig.direction,
+            leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+          },
+        };
+      });
+
+      const session = copySessionsRef.current[addressId];
+      if (!session || session.status === 'idle') return;
+      if (!events.length) {
+        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running' } }));
+        return;
+      }
+
+      const latestEventKey = getEventKey(events[0]);
+      if (!session.lastEventKey) {
+        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
+        return;
+      }
+
+      const seenIndex = events.findIndex((event) => getEventKey(event) === session.lastEventKey);
+      const freshEvents = (seenIndex === -1 ? events : events.slice(0, seenIndex)).reverse();
+
+      if (freshEvents.length === 0) {
+        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
+        return;
+      }
+
+      const cfg = walletConfigs[addressId] || defaultConfig;
+      let openedTrades = 0;
+
+      for (const event of freshEvents) {
+        const eventConfig: WalletModeConfig = {
+          ...cfg,
+          sourceTradeUsd: String(event.value_usd ?? cfg.sourceTradeUsd),
+          sharePrice: String(event.price ?? cfg.sharePrice),
+          fixedShares: String(event.size ?? cfg.fixedShares),
+          direction: resolveDirection(event) ?? cfg.direction,
+        };
+        const tradeUsd = calculateTradeUsd(eventConfig);
+        if (tradeUsd <= 0) continue;
+
+        const result = startPaperTrade(addressId, {
+          strategy: eventConfig.strategy || 'Copy Trading',
+          direction: eventConfig.direction,
+          spendUsd: tradeUsd,
+          copyMode: eventConfig.mode,
+        });
+
+        if (result.ok) openedTrades += 1;
+      }
+
+      setCopySessions((prev) => ({
+        ...prev,
+        [addressId]: {
+          ...prev[addressId],
+          status: 'running',
+          lastEventKey: latestEventKey,
+        },
+      }));
+
+      if (openedTrades > 0) {
+        toast.success(`${openedTrades} yeni aktivite kopyalandı`);
+      }
+    } catch {
+      setCopySessions((prev) => {
+        const current = prev[addressId];
+        if (!current || current.status === 'idle') return prev;
+        return { ...prev, [addressId]: { ...current, status: 'running' } };
+      });
+    }
+  }, [addresses, calculateTradeUsd, startPaperTrade, walletConfigs]);
+
+  useEffect(() => {
+    const runningWalletIds = Object.entries(copySessions)
+      .filter(([, session]) => session.status !== 'idle')
+      .map(([walletId]) => walletId);
+
+    if (!runningWalletIds.length) return;
+
+    const intervalId = window.setInterval(() => {
+      const currentlyRunningIds = Object.entries(copySessionsRef.current)
+        .filter(([, session]) => session.status !== 'idle')
+        .map(([walletId]) => walletId);
+      currentlyRunningIds.forEach((walletId) => {
+        void syncWalletCopyTrades(walletId);
+      });
+    }, TRACKER_POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [copySessions, syncWalletCopyTrades]);
+
   const handleStart = async () => {
     if (!setupId) return toast.error('Önce bir cüzdan seçin');
     const latestConfig = await loadAutoConfig(setupId) || currentConfig;
     const tradeUsd = calculateTradeUsd(latestConfig);
     if (tradeUsd <= 0) return toast.error('Trade tutarı 0 dan büyük olmalı');
 
-    const result = startPaperTrade(setupId, {
-      strategy: latestConfig.strategy || 'Copy Trading',
-      direction: latestConfig.direction,
-      spendUsd: tradeUsd,
-      copyMode: latestConfig.mode,
-    });
+    const selectedAddress = addresses.find((address) => address.id === setupId);
+    if (!selectedAddress) return toast.error('Cüzdan bulunamadı');
 
-    if (!result.ok) return toast.error(result.reason || 'Paper trade başlatılamadı');
-    toast.success('Paper copy trade başlatıldı!');
+    const payload = await getWalletEventsWithStats(selectedAddress.address);
+    const latestEventKey = payload.events[0] ? getEventKey(payload.events[0]) : undefined;
+
+    setCopySessions((prev) => ({
+      ...prev,
+      [setupId]: {
+        status: 'running',
+        lastEventKey: latestEventKey,
+      },
+    }));
+
+    toast.success('Copy trade takip sistemi başlatıldı. Yeni aktiviteler otomatik kopyalanacak.');
     setCollapsed(true);
+  };
+
+  const handleStop = (addressId: string) => {
+    setCopySessions((prev) => ({
+      ...prev,
+      [addressId]: {
+        ...prev[addressId],
+        status: 'idle',
+      },
+    }));
+    toast.success('Copy trade takibi durduruldu');
   };
 
   const openAnalysis = (addressId: string) => {
     setAnalysisAddressId(addressId);
     setView('analysis');
   };
+
+  const selectedSession = setupId ? copySessions[setupId] : undefined;
+  const isSelectedRunning = selectedSession?.status === 'running' || selectedSession?.status === 'syncing';
 
   return (
     <div className="animate-slide-up">
@@ -348,6 +505,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                 ))}
               </select>
             </div>
+            {Object.entries(copySessions).some(([, session]) => session.status !== 'idle') && (
+              <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-2 text-xs text-primary">
+                Takip aktif: {Object.entries(copySessions)
+                  .filter(([, session]) => session.status !== 'idle')
+                  .map(([walletId]) => addresses.find((addr) => addr.id === walletId)?.username || addresses.find((addr) => addr.id === walletId)?.label || walletId)
+                  .join(', ')}
+              </div>
+            )}
           </div>
 
           <div className="glass-card p-5 mb-6">
@@ -382,9 +547,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       {COPY_MODE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                     <p className="text-[11px] text-muted-foreground">{COPY_MODE_OPTIONS.find((item) => item.value === currentConfig.mode)?.description}</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input type="number" value={currentConfig.sourceTradeUsd} onChange={(e) => setConfig({ sourceTradeUsd: e.target.value })} className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Source USD" />
-                      <input type="number" value={currentConfig.leaderFreeBalance} onChange={(e) => setConfig({ leaderFreeBalance: e.target.value })} className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Leader bakiye" />
+                    <div className="rounded-lg bg-secondary/20 border border-border/20 p-2 text-[11px] text-muted-foreground">
+                      Source USD ve Leader bakiye değerleri otomatik olarak takip edilen cüzdandan çekilir.
                     </div>
                     {currentConfig.mode === 'multiplier' && <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Multiplier" />}
                     {currentConfig.mode === 'fixed-amount' && <input type="number" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Sabit USD" />}
@@ -392,9 +556,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig).toFixed(2)}</span></p>
                   </div>
                 )}
-                <button onClick={handleStart} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
-                  <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Başlat
-                </button>
+                {!isSelectedRunning ? (
+                  <button onClick={handleStart} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
+                    <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Başlat
+                  </button>
+                ) : (
+                  <button onClick={() => setupId && handleStop(setupId)} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20">
+                    {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Durdur
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -413,7 +583,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       <div className="flex items-center gap-2">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.direction === 'long' ? 'bg-accent/15 text-accent' : 'bg-destructive/15 text-destructive'}`}>{trade.direction.toUpperCase()}</span>
                         <span className="text-xs font-medium text-foreground">{trade.strategy}</span>
-                        <span className="text-[10px] text-muted-foreground">{trade.walletName}</span>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); openAnalysis(trade.addressId); }} className="text-[10px] text-primary hover:underline">{trade.walletName}</button>
+                        <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold">AKTİF</span>
                       </div>
                       <span className="text-[11px] text-muted-foreground">Analiz için tıkla →</span>
                     </div>
