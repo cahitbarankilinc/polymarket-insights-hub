@@ -9,7 +9,6 @@ const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: st
   { value: 'proportional', label: 'Proportional to Free Balance', description: 'Boştaki bakiyeye göre oranla.' },
   { value: 'multiplier', label: 'Multiplier Mode', description: 'Onun trade tutarı × k.' },
   { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Her işlemde sabit USD.' },
-  { value: 'fixed-shares', label: 'Fixed Shares per Trade', description: 'Her işlemde sabit share.' },
 ];
 
 interface WalletModeConfig {
@@ -402,18 +401,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun trade tutarı ($)</label>
-                  <input type="number" value={currentConfig.sourceTradeUsd} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
-                </div>
-
-                {currentConfig.mode === 'proportional' && (
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Onun free balance ($)</label>
-                    <input type="number" value={currentConfig.leaderFreeBalance} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
-                  </div>
-                )}
-
                 {currentConfig.mode === 'multiplier' && (
                   <div>
                     <label className="text-xs font-medium text-muted-foreground mb-1 block">Multiplier k</label>
@@ -427,27 +414,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     <input type="number" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" />
                   </div>
                 )}
-
-                {currentConfig.mode === 'fixed-shares' && (
-                  <>
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Sabit share</label>
-                      <input type="number" value={currentConfig.fixedShares} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Share fiyatı ($)</label>
-                      <input type="number" value={currentConfig.sharePrice} readOnly className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80" />
-                    </div>
-                  </>
-                )}
-
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Yön</label>
-                  <select value={currentConfig.direction} disabled className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm opacity-80">
-                    <option value="long">Up</option>
-                    <option value="short">Down</option>
-                  </select>
-                </div>
 
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Etiket/Strateji</label>
