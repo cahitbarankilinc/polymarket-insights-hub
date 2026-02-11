@@ -60,6 +60,8 @@ const parseNumberFromText = (value?: string | null): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const resolveLeaderFreeBalance = (value?: string | null): number | undefined => parseNumberFromText(value);
+
 const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'short' | undefined => {
   if (!event) return undefined;
   const outcome = (event.outcome ?? '').toLowerCase();
@@ -85,6 +87,12 @@ interface PaperTradePrefill {
   fixedShares?: number;
   direction?: 'long' | 'short';
   leaderFreeBalance?: number;
+}
+
+interface BudgetDraft {
+  mode: 'unlimited' | 'limited';
+  type: 'daily' | 'total';
+  amount: number;
 }
 
 interface TradeActivity {
@@ -194,7 +202,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
         fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
         direction: resolveDirection(latestEvent) ?? baseConfig.direction,
-        leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
       };
 
       setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
@@ -202,7 +210,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     } catch {
       const nextConfig: WalletModeConfig = {
         ...baseConfig,
-        leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
       };
       setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
       return nextConfig;
@@ -238,6 +246,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   }, [setupId, addresses]);
 
   const currentConfig = setupId ? (walletConfigs[setupId] || defaultConfig) : defaultConfig;
+
+  useEffect(() => {
+    if (currentConfig.mode !== 'proportional') return;
+
+    if (budgetMode !== 'limited') setBudgetMode('limited');
+
+    const parsedBudgetAmount = parseFloat(budgetAmount) || 0;
+    if (parsedBudgetAmount <= 0 || budgetAmount === '1000') setBudgetAmount('100');
+  }, [budgetAmount, budgetMode, currentConfig.mode]);
 
   const myDynamicFreeBalance = useMemo(() => {
     if (paperBudget.mode === 'limited') return paperBudget.remaining;
@@ -349,22 +366,38 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     setWalletConfigs(prev => ({ ...prev, [setupId]: { ...(prev[setupId] || defaultConfig), ...patch } }));
   };
 
+  const resolveBudgetDraft = (): BudgetDraft => ({
+    mode: budgetMode,
+    type: budgetType,
+    amount: Math.max(0, parseFloat(budgetAmount) || 0),
+  });
+
   const applyBudget = () => {
-    setPaperBudget({ mode: budgetMode, type: budgetType, amount: parseFloat(budgetAmount) || 0 });
+    const nextBudget = resolveBudgetDraft();
+    setPaperBudget(nextBudget);
     toast.success('Bütçe ayarları güncellendi');
   };
 
-  const calculateTradeUsd = (config: WalletModeConfig) => {
+  const calculateTradeUsd = (config: WalletModeConfig, budgetDraft?: BudgetDraft) => {
     const sourceTradeUsd = parseFloat(config.sourceTradeUsd) || 0;
-    const leaderFree = parseFloat(config.leaderFreeBalance) || 1;
+    const leaderFree = parseFloat(config.leaderFreeBalance) || 0;
     const multiplier = parseFloat(config.multiplier) || 1;
     const fixedAmount = parseFloat(config.fixedAmount) || 0;
     const fixedShares = parseFloat(config.fixedShares) || 0;
     const sharePrice = parseFloat(config.sharePrice) || 1;
 
+    const activeBudget = budgetDraft ?? paperBudget;
+    const proportionalBudgetBase = activeBudget.mode === 'limited'
+      ? Math.max(activeBudget.amount, 0)
+      : Math.max(myDynamicFreeBalance, 0);
+
     switch (config.mode) {
       case 'notional': return sourceTradeUsd;
-      case 'proportional': return sourceTradeUsd * (myDynamicFreeBalance / Math.max(leaderFree, 0.0001));
+      case 'proportional': {
+        if (sourceTradeUsd <= 0 || leaderFree <= 0 || proportionalBudgetBase <= 0) return 0;
+        const sourceTradeRatio = sourceTradeUsd / leaderFree;
+        return sourceTradeRatio * proportionalBudgetBase;
+      }
       case 'multiplier': return sourceTradeUsd * multiplier;
       case 'fixed-amount': return fixedAmount;
       case 'fixed-shares': return fixedShares * sharePrice;
@@ -399,7 +432,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
             fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
             direction: resolveDirection(latestEvent) ?? baseConfig.direction,
-            leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+            leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
           },
         };
       });
@@ -511,8 +544,16 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
   const handleStart = async () => {
     if (!setupId) return toast.error('Önce bir cüzdan seçin');
+
+    const nextBudget = resolveBudgetDraft();
+    if (currentConfig.mode === 'proportional' && nextBudget.mode !== 'limited') {
+      return toast.error('Proportional modunda bütçe tipi Limitli olmalı');
+    }
+
+    setPaperBudget(nextBudget);
+
     const latestConfig = await loadAutoConfig(setupId) || currentConfig;
-    const tradeUsd = calculateTradeUsd(latestConfig);
+    const tradeUsd = calculateTradeUsd(latestConfig, nextBudget);
     if (tradeUsd <= 0) return toast.error('Trade tutarı 0 dan büyük olmalı');
 
     const selectedAddress = addresses.find((address) => address.id === setupId);
@@ -612,9 +653,20 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-2 block">Bütçe Tipi</label>
                 <div className="flex gap-2 mb-2">
-                  <button onClick={() => setBudgetMode('unlimited')} className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'unlimited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}>Sınırsız</button>
+                  <button
+                    onClick={() => setBudgetMode('unlimited')}
+                    disabled={currentConfig.mode === 'proportional'}
+                    className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'unlimited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    Sınırsız
+                  </button>
                   <button onClick={() => setBudgetMode('limited')} className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'limited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}>Limitli</button>
                 </div>
+                {currentConfig.mode === 'proportional' && (
+                  <p className="text-[11px] text-muted-foreground mb-2">
+                    Proportional modunda bütçe tipi otomatik olarak <span className="font-semibold text-foreground">Limitli</span> tutulur.
+                  </p>
+                )}
                 {budgetMode === 'limited' && (
                   <div className="grid grid-cols-2 gap-2 mb-2">
                     <select value={budgetType} onChange={(e) => setBudgetType(e.target.value as 'daily' | 'total')} className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
@@ -634,7 +686,19 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                 </div>
                 {!collapsed && (
                   <div className="space-y-2">
-                    <select value={currentConfig.mode} onChange={(e) => setConfig({ mode: e.target.value as CopyMode })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
+                    <select
+                      value={currentConfig.mode}
+                      onChange={(e) => {
+                        const nextMode = e.target.value as CopyMode;
+                        setConfig({ mode: nextMode });
+                        if (nextMode === 'proportional') {
+                          setBudgetMode('limited');
+                          setBudgetAmount('100');
+                          setPaperBudget({ mode: 'limited', type: budgetType, amount: 100 });
+                        }
+                      }}
+                      className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                    >
                       {COPY_MODE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                     <p className="text-[11px] text-muted-foreground">{COPY_MODE_OPTIONS.find((item) => item.value === currentConfig.mode)?.description}</p>
@@ -644,7 +708,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     {currentConfig.mode === 'multiplier' && <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Multiplier" />}
                     {currentConfig.mode === 'fixed-amount' && <input type="number" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Sabit USD" />}
                     <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Strateji" />
-                    <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig).toFixed(2)}</span></p>
+                    <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig, resolveBudgetDraft()).toFixed(2)}</span></p>
                   </div>
                 )}
                 {!isSelectedRunning ? (

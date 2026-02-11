@@ -205,7 +205,13 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     };
   }, [address.address]);
 
-  const latest30 = useMemo(() => events.slice(0, 30), [events]);
+  const latest30 = useMemo(() => [...events]
+    .sort((a, b) => {
+      const bTs = toTimestampMs(b.event_time) ?? toTimestampMs(b.seen_at_utc) ?? 0;
+      const aTs = toTimestampMs(a.event_time) ?? toTimestampMs(a.seen_at_utc) ?? 0;
+      return bTs - aTs;
+    })
+    .slice(0, 30), [events]);
 
   const { buyPriceShareData, buyPriceUsdData } = useMemo(() => {
     const limitedEvents = events.slice(0, MAX_EVENTS_FOR_CHART);
