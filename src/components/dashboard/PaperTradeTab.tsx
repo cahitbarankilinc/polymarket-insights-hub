@@ -60,6 +60,8 @@ const parseNumberFromText = (value?: string | null): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const resolveLeaderFreeBalance = (value?: string | null): number | undefined => parseNumberFromText(value);
+
 const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'short' | undefined => {
   if (!event) return undefined;
   const outcome = (event.outcome ?? '').toLowerCase();
@@ -194,7 +196,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
         fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
         direction: resolveDirection(latestEvent) ?? baseConfig.direction,
-        leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
       };
 
       setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
@@ -202,7 +204,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     } catch {
       const nextConfig: WalletModeConfig = {
         ...baseConfig,
-        leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
       };
       setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
       return nextConfig;
@@ -356,15 +358,23 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
   const calculateTradeUsd = (config: WalletModeConfig) => {
     const sourceTradeUsd = parseFloat(config.sourceTradeUsd) || 0;
-    const leaderFree = parseFloat(config.leaderFreeBalance) || 1;
+    const leaderFree = parseFloat(config.leaderFreeBalance) || 0;
     const multiplier = parseFloat(config.multiplier) || 1;
     const fixedAmount = parseFloat(config.fixedAmount) || 0;
     const fixedShares = parseFloat(config.fixedShares) || 0;
     const sharePrice = parseFloat(config.sharePrice) || 1;
 
+    const proportionalBudgetBase = paperBudget.mode === 'limited'
+      ? Math.max(paperBudget.amount, 0)
+      : Math.max(myDynamicFreeBalance, 0);
+
     switch (config.mode) {
       case 'notional': return sourceTradeUsd;
-      case 'proportional': return sourceTradeUsd * (myDynamicFreeBalance / Math.max(leaderFree, 0.0001));
+      case 'proportional': {
+        if (sourceTradeUsd <= 0 || leaderFree <= 0 || proportionalBudgetBase <= 0) return 0;
+        const sourceTradeRatio = sourceTradeUsd / leaderFree;
+        return sourceTradeRatio * proportionalBudgetBase;
+      }
       case 'multiplier': return sourceTradeUsd * multiplier;
       case 'fixed-amount': return fixedAmount;
       case 'fixed-shares': return fixedShares * sharePrice;
@@ -399,7 +409,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
             fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
             direction: resolveDirection(latestEvent) ?? baseConfig.direction,
-            leaderFreeBalance: String(parseNumberFromText(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
+            leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
           },
         };
       });
