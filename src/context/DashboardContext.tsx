@@ -81,17 +81,9 @@ const randomPrice = () => +(Math.random() * 100000 + 20000).toFixed(2);
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
-  const [addresses, setAddresses] = useState<TrackedAddress[]>([
-    { id: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', addedAt: new Date('2025-01-15'), label: 'Whale Alpha', note: 'Trend marketlerinde agresif BUY yapıyor.' },
-    { id: '2', address: '0x8f9f96f5f4f9054f0f665f2f344ecb9ed9f2f9e9', category: 'Smart Money', addedAt: new Date('2025-02-01'), label: 'SM Trader' },
-    { id: '3', address: '0x7d7f7f7c1a2f40f4a0c8e510af4f558b5756fa0d', category: 'Whales', addedAt: new Date('2025-01-20') },
-    { id: '4', address: '0x4ea5d5e7f8e8ce0c8f9f675e7e5fb42f6a2f7e24', category: 'Market Makers', addedAt: new Date('2025-01-28') },
-    { id: '5', address: '0x3f5ce5fbfe3e9af3971dD833D26BA9b5C936f0bE', category: 'DeFi Protocols', addedAt: new Date('2025-02-05'), label: 'Reference Wallet' },
-  ]);
+  const [addresses, setAddresses] = useState<TrackedAddress[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
-  const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([
-    { id: 'pt1', addressId: '1', address: '0x23cb796cf58bfa12352f0164f479deedbd50658e', category: 'Whales', strategy: 'Mirror Trading', direction: 'long', entryPrice: 42350, currentPrice: 44120, amount: 0.5, startedAt: new Date('2025-02-01'), status: 'active', copyMode: 'notional', spentUsd: 21175 },
-  ]);
+  const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
   const [paperBudget, setPaperBudgetState] = useState<PaperBudget>({
     mode: 'unlimited',
     type: 'total',
