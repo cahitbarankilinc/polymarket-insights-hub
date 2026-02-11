@@ -97,6 +97,57 @@ interface CopySessionState {
 
 const TRACKER_POLL_MS = 7000;
 
+const toEventTimestamp = (event: WalletTrackerEvent): number => {
+  const candidates = [event.event_time, event.seen_at_utc];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const normalized = typeof candidate === 'string' ? candidate.trim() : String(candidate);
+    if (!normalized) continue;
+
+    if (/^\d+(?:\.\d+)?$/.test(normalized)) {
+      const numeric = Number(normalized);
+      if (!Number.isFinite(numeric)) continue;
+      return numeric > 1e12 ? numeric : numeric * 1000;
+    }
+
+    const parsed = new Date(normalized).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+
+  return 0;
+};
+
+const sortEventsOldestFirst = (events: WalletTrackerEvent[]) => (
+  [...events].sort((a, b) => toEventTimestamp(a) - toEventTimestamp(b))
+);
+
+const getLatestEvent = (events: WalletTrackerEvent[]) => {
+  if (!events.length) return undefined;
+  return sortEventsOldestFirst(events).at(-1);
+};
+
+const toPositiveNumber = (value: unknown): number => {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 0;
+};
+
+const resolveEventTradeUsd = (event: WalletTrackerEvent, fallbackUsd: number): number => {
+  const directUsd = toPositiveNumber(event.value_usd);
+  if (directUsd > 0) return directUsd;
+
+  const size = toPositiveNumber(event.size);
+  const price = toPositiveNumber(event.price);
+  const calculatedUsd = size * price;
+  if (calculatedUsd > 0) return calculatedUsd;
+
+  return fallbackUsd > 0 ? fallbackUsd : 0;
+};
+
 const getEventKey = (event: WalletTrackerEvent): string => (
   event.tx_hash
   || `${event.seen_at_utc}:${event.market ?? ''}:${event.side ?? ''}:${event.value_usd ?? ''}:${event.price ?? ''}`
@@ -112,6 +163,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [virtualFreeBalance, setVirtualFreeBalance] = useState('1000');
   const [walletConfigs, setWalletConfigs] = useState<Record<string, WalletModeConfig>>({});
   const [copySessions, setCopySessions] = useState<Record<string, CopySessionState>>({});
+  const [copySessionErrors, setCopySessionErrors] = useState<Record<string, string | null>>({});
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
   const copySessionsRef = useRef(copySessions);
@@ -128,7 +180,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
-      const latestEvent = payload.events[0];
+      const latestEvent = getLatestEvent(payload.events);
       const nextConfig: WalletModeConfig = {
         ...baseConfig,
         sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
@@ -333,8 +385,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
-      const events = payload.events;
-      const latestEvent = events[0];
+      const events = sortEventsOldestFirst(payload.events);
+      const latestEvent = events.at(-1);
 
       setWalletConfigs((prev) => {
         const baseConfig = prev[addressId] || defaultConfig;
@@ -358,14 +410,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         return;
       }
 
-      const latestEventKey = getEventKey(events[0]);
+      const latestEventKey = getEventKey(events[events.length - 1]);
       if (!session.lastEventKey) {
         setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
         return;
       }
 
       const seenIndex = events.findIndex((event) => getEventKey(event) === session.lastEventKey);
-      const freshEvents = (seenIndex === -1 ? events : events.slice(0, seenIndex)).reverse();
+      const freshEvents = seenIndex === -1 ? events : events.slice(seenIndex + 1);
 
       if (freshEvents.length === 0) {
         setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
@@ -376,9 +428,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       let openedTrades = 0;
 
       for (const event of freshEvents) {
+        const sourceTradeUsd = resolveEventTradeUsd(event, toPositiveNumber(cfg.sourceTradeUsd));
         const eventConfig: WalletModeConfig = {
           ...cfg,
-          sourceTradeUsd: String(event.value_usd ?? cfg.sourceTradeUsd),
+          sourceTradeUsd: String(sourceTradeUsd || cfg.sourceTradeUsd),
           sharePrice: String(event.price ?? cfg.sharePrice),
           fixedShares: String(event.size ?? cfg.fixedShares),
           direction: resolveDirection(event) ?? cfg.direction,
@@ -405,10 +458,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         },
       }));
 
+      setCopySessionErrors((prev) => ({ ...prev, [addressId]: null }));
+
       if (openedTrades > 0) {
         toast.success(`${openedTrades} yeni aktivite kopyalandı`);
       }
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Copy trade senkronizasyonu sırasında hata oluştu';
+      setCopySessionErrors((prev) => ({ ...prev, [addressId]: message }));
+      toast.error(message);
       setCopySessions((prev) => {
         const current = prev[addressId];
         if (!current || current.status === 'idle') return prev;
@@ -447,19 +505,27 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     const selectedAddress = addresses.find((address) => address.id === setupId);
     if (!selectedAddress) return toast.error('Cüzdan bulunamadı');
 
-    const payload = await getWalletEventsWithStats(selectedAddress.address);
-    const latestEventKey = payload.events[0] ? getEventKey(payload.events[0]) : undefined;
+    try {
+      const payload = await getWalletEventsWithStats(selectedAddress.address);
+      const latestEvent = getLatestEvent(payload.events);
+      const latestEventKey = latestEvent ? getEventKey(latestEvent) : undefined;
 
-    setCopySessions((prev) => ({
-      ...prev,
-      [setupId]: {
-        status: 'running',
-        lastEventKey: latestEventKey,
-      },
-    }));
+      setCopySessions((prev) => ({
+        ...prev,
+        [setupId]: {
+          status: 'running',
+          lastEventKey: latestEventKey,
+        },
+      }));
+      setCopySessionErrors((prev) => ({ ...prev, [setupId]: null }));
 
-    toast.success('Copy trade takip sistemi başlatıldı. Yeni aktiviteler otomatik kopyalanacak.');
-    setCollapsed(true);
+      toast.success('Copy trade takip sistemi başlatıldı. Yeni aktiviteler otomatik kopyalanacak.');
+      setCollapsed(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Takip başlatılırken event verisi alınamadı';
+      setCopySessionErrors((prev) => ({ ...prev, [setupId]: message }));
+      toast.error(message);
+    }
   };
 
   const handleStop = (addressId: string) => {
@@ -470,6 +536,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         status: 'idle',
       },
     }));
+    setCopySessionErrors((prev) => ({ ...prev, [addressId]: null }));
     toast.success('Copy trade takibi durduruldu');
   };
 
@@ -640,6 +707,9 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           <p className="text-xs font-semibold text-foreground">{walletName}</p>
                           <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan takip ediliyor. Yeni aktivite geldiğinde trade otomatik oluşacak.</p>
+                          {copySessionErrors[addressId] && (
+                            <p className="mt-2 text-[11px] text-destructive">Hata: {copySessionErrors[addressId]}</p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="px-2 py-1 rounded text-[10px] font-semibold bg-primary/15 text-primary">{statusLabel}</span>

@@ -198,7 +198,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       startedAt: new Date(),
       status: 'active',
       copyMode: input.copyMode,
-      spentUsd,
+      spentUsd: spendUsd,
     };
     setPaperTrades(prev => [...prev, trade]);
     return { ok: true };
