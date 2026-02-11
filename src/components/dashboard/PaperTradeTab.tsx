@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Play, X, TrendingUp, TrendingDown, Wallet, ChevronUp, ChevronDown } from 'lucide-react';
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronUp,
+  Play,
+  TrendingDown,
+  TrendingUp,
+  Wallet,
+  X,
+} from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
 import { getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
+import { Scatter, ScatterChart, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { toast } from 'sonner';
 
 const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: string }> = [
@@ -35,6 +46,9 @@ const defaultConfig: WalletModeConfig = {
   direction: 'long',
 };
 
+const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}`;
+const formatDate = (value: Date) => value.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
 const parseNumberFromText = (value?: string | null): number | undefined => {
   if (!value) return undefined;
   const match = value.match(/[-+]?\d[\d.,]*/g);
@@ -65,6 +79,17 @@ interface PaperTradePrefill {
   fixedShares?: number;
   direction?: 'long' | 'short';
   leaderFreeBalance?: number;
+}
+
+interface TradeActivity {
+  id: string;
+  tradeId: string;
+  side: 'BUY' | 'SELL';
+  occurredAt: Date;
+  marketLabel: string;
+  price: number;
+  share: number;
+  usd: number;
 }
 
 export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
@@ -172,6 +197,99 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return parseFloat(virtualFreeBalance) || 0;
   }, [paperBudget.mode, paperBudget.remaining, virtualFreeBalance]);
 
+  const tradesWithAddress = useMemo(() => paperTrades.map((trade) => {
+    const wallet = addresses.find((addr) => addr.id === trade.addressId);
+    const walletName = wallet?.username || wallet?.label || trade.address;
+    return {
+      ...trade,
+      walletName,
+      marketLabel: `${trade.strategy || 'Copy Trading'} • ${walletName}`,
+      buyUsd: trade.spentUsd || 0,
+      sellUsd: trade.status === 'closed' ? trade.currentPrice * trade.amount : 0,
+    };
+  }), [addresses, paperTrades]);
+
+  const buyActivities = useMemo<TradeActivity[]>(() => tradesWithAddress.map((trade) => ({
+    id: `${trade.id}-buy`,
+    tradeId: trade.id,
+    side: 'BUY',
+    occurredAt: new Date(trade.startedAt),
+    marketLabel: trade.marketLabel,
+    price: trade.entryPrice,
+    share: trade.amount,
+    usd: trade.buyUsd,
+  })), [tradesWithAddress]);
+
+  const sellActivities = useMemo<TradeActivity[]>(() => tradesWithAddress
+    .filter((trade) => trade.status === 'closed')
+    .map((trade) => ({
+      id: `${trade.id}-sell`,
+      tradeId: trade.id,
+      side: 'SELL',
+      occurredAt: new Date(trade.closedAt || trade.startedAt),
+      marketLabel: trade.marketLabel,
+      price: trade.currentPrice,
+      share: trade.amount,
+      usd: trade.sellUsd,
+    })), [tradesWithAddress]);
+
+  const myActivities = useMemo(() => [...buyActivities, ...sellActivities]
+    .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime()), [buyActivities, sellActivities]);
+
+  const analysisStats = useMemo(() => {
+    if (tradesWithAddress.length === 0) return null;
+
+    const startTimestamp = Math.min(...tradesWithAddress.map((trade) => new Date(trade.startedAt).getTime()));
+    const startAt = new Date(startTimestamp);
+    const totalBuy = tradesWithAddress.reduce((sum, trade) => sum + trade.buyUsd, 0);
+    const totalSell = tradesWithAddress.reduce((sum, trade) => sum + trade.sellUsd, 0);
+    const inGameMoney = tradesWithAddress
+      .filter((trade) => trade.status === 'active')
+      .reduce((sum, trade) => sum + trade.buyUsd, 0);
+
+    const marketRows = new Map<string, { label: string; buyUsd: number; sellUsd: number; totalUsd: number; tradeCount: number }>();
+    for (const trade of tradesWithAddress) {
+      const row = marketRows.get(trade.marketLabel) || { label: trade.marketLabel, buyUsd: 0, sellUsd: 0, totalUsd: 0, tradeCount: 0 };
+      row.buyUsd += trade.buyUsd;
+      row.sellUsd += trade.sellUsd;
+      row.totalUsd += trade.buyUsd + trade.sellUsd;
+      row.tradeCount += 1;
+      marketRows.set(trade.marketLabel, row);
+    }
+
+    const topMarkets = Array.from(marketRows.values())
+      .sort((a, b) => b.totalUsd - a.totalUsd)
+      .slice(0, 10);
+
+    return {
+      startAt,
+      totalBudgetText: paperBudget.mode === 'limited'
+        ? `${formatUsd(paperBudget.amount)} (${paperBudget.type === 'daily' ? 'günlük' : 'toplam'})`
+        : 'Sınırsız',
+      freeBudgetText: paperBudget.mode === 'limited' ? formatUsd(paperBudget.remaining) : 'Sınırsız',
+      inGameMoney,
+      totalTransactions: myActivities.length,
+      totalBuy,
+      totalSell,
+      topMarkets,
+    };
+  }, [myActivities.length, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type, tradesWithAddress]);
+
+  const sharePriceData = useMemo(() => {
+    const grouped = new Map<number, { share: number; usdSpent: number }>();
+    for (const trade of tradesWithAddress) {
+      const bucket = Number(trade.entryPrice.toFixed(2));
+      const row = grouped.get(bucket) || { share: 0, usdSpent: 0 };
+      row.share += trade.amount;
+      row.usdSpent += trade.buyUsd;
+      grouped.set(bucket, row);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([price, values]) => ({ price, ...values }))
+      .sort((a, b) => a.price - b.price);
+  }, [tradesWithAddress]);
+
   const setConfig = (patch: Partial<WalletModeConfig>) => {
     if (!setupId) return;
     setWalletConfigs(prev => ({
@@ -259,6 +377,33 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       </div>
 
       <div className="glass-card p-5 mb-6">
+        <h3 className="text-sm font-semibold text-foreground mb-4">Takip Edilen Cüzdanlar</h3>
+        <label className="text-xs font-medium text-muted-foreground mb-2 block">Copy trade için cüzdan seç</label>
+        <div className="flex items-center gap-3">
+          <Wallet className="w-4 h-4 text-primary" />
+          <select
+            value={setupId || ''}
+            onChange={(e) => {
+              const nextId = e.target.value || null;
+              setSetupId(nextId);
+              setCollapsed(false);
+            }}
+            className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+          >
+            <option value="">Cüzdan seçin...</option>
+            {addresses.map((addr) => {
+              const walletName = addr.username || addr.label || addr.address;
+              return (
+                <option key={addr.id} value={addr.id}>
+                  {walletName} • {addr.category}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+      </div>
+
+      <div className="glass-card p-5 mb-6">
         <h3 className="text-sm font-semibold text-foreground mb-4">Bütçe Yönetimi</h3>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
@@ -339,28 +484,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         </div>
       </div>
 
-      <div className="mb-6">
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Takip edilen cüzdanlar</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {addresses.map(addr => (
-            <button
-              key={addr.id}
-              onClick={() => {
-                setSetupId(addr.id);
-                setCollapsed(false);
-              }}
-              className={`glass-card-hover p-3 text-left border ${setupId === addr.id ? 'border-primary/50 bg-primary/5' : 'border-border/20'}`}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <Wallet className="w-3.5 h-3.5 text-primary" />
-                <span className="text-sm font-medium text-foreground">{addr.label || addr.category}</span>
-              </div>
-              <p className="font-mono text-[10px] text-muted-foreground truncate">{addr.address}</p>
-            </button>
-          ))}
-        </div>
-      </div>
-
       {setupId && (
         <div className="glass-card p-5 mb-6 glow-border animate-fade-in">
           <div className="flex items-center justify-between mb-4">
@@ -433,8 +556,114 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             onClick={handleStart}
             className="w-full py-3 rounded-lg font-semibold text-sm bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-all active:scale-[0.98]"
           >
-            <Play className="w-4 h-4 inline mr-2" /> {addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan'} için Başlat
+            <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Başlat
           </button>
+        </div>
+      )}
+
+      {analysisStats && (
+        <div className="glass-card p-4 mb-6">
+          <h3 className="text-sm font-semibold text-foreground mb-3">Copy Trade Analizi</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+            {[
+              { label: 'TRADE BAŞLANGIÇ', value: formatDate(analysisStats.startAt) },
+              { label: 'TOTAL BUDGET', value: analysisStats.totalBudgetText },
+              { label: 'SERBEST PARA', value: analysisStats.freeBudgetText },
+              { label: 'OYUNDAKİ PARA', value: formatUsd(analysisStats.inGameMoney) },
+              { label: 'TOPLAM İŞLEM', value: String(analysisStats.totalTransactions) },
+              { label: 'TOTAL BUY', value: formatUsd(analysisStats.totalBuy) },
+              { label: 'TOTAL SELL', value: formatUsd(analysisStats.totalSell) },
+            ].map((stat) => (
+              <div key={stat.label} className="stat-card">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">{stat.label}</p>
+                <p className="text-sm font-bold text-foreground break-words">{stat.value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+            <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
+              <h4 className="text-xs font-semibold text-foreground mb-3">Share/Adet Grafiği</h4>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
+                    <XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis dataKey="share" type="number" name="Share" stroke="hsl(var(--muted-foreground))" />
+                    <Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} />
+                    <Scatter data={sharePriceData.map((item) => ({ price: item.price, share: item.share }))} fill="hsl(var(--primary))" />
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
+              <h4 className="text-xs font-semibold text-foreground mb-3">Price/Adet Grafiği</h4>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
+                    <XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis dataKey="usdSpent" type="number" name="USD" stroke="hsl(var(--muted-foreground))" />
+                    <Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('tr-TR', { style: 'currency', currency: 'USD' })} />
+                    <Scatter data={sharePriceData.map((item) => ({ price: item.price, usdSpent: item.usdSpent }))} fill="hsl(var(--accent))" />
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-4 p-3 rounded-lg border border-border/30 bg-secondary/10">
+            <h4 className="text-xs font-semibold text-foreground mb-2">En Çok Harcama Yapılan İlk 10 Market</h4>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px] text-xs">
+                <thead>
+                  <tr className="border-b border-border/30 text-muted-foreground">
+                    <th className="py-2 text-left">#</th>
+                    <th className="py-2 text-left">Market</th>
+                    <th className="py-2 text-right">BUY USD</th>
+                    <th className="py-2 text-right">SELL USD</th>
+                    <th className="py-2 text-right">Toplam USD</th>
+                    <th className="py-2 text-right">İşlem</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysisStats.topMarkets.map((market, index) => (
+                    <tr key={market.label} className="border-b border-border/20 last:border-0">
+                      <td className="py-2">{index + 1}</td>
+                      <td className="py-2">{market.label}</td>
+                      <td className="py-2 text-right text-accent">{formatUsd(market.buyUsd)}</td>
+                      <td className="py-2 text-right text-warning">{formatUsd(market.sellUsd)}</td>
+                      <td className="py-2 text-right">{formatUsd(market.totalUsd)}</td>
+                      <td className="py-2 text-right">{market.tradeCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
+            <h4 className="text-xs font-semibold text-foreground mb-2">Son Aktiviteler</h4>
+            <div className="space-y-2">
+              {myActivities.slice(0, 30).map((activity) => (
+                <div key={activity.id} className="flex items-center justify-between border-b border-border/20 pb-2 last:border-0 last:pb-0">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${activity.side === 'BUY' ? 'bg-accent/10' : 'bg-warning/10'}`}>
+                      {activity.side === 'BUY' ? <ArrowDownRight className="w-4 h-4 text-accent" /> : <ArrowUpRight className="w-4 h-4 text-warning" />}
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-foreground">{activity.marketLabel}</p>
+                      <p className="text-[10px] text-muted-foreground">{activity.side} • {formatDate(activity.occurredAt)}</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-foreground text-right">
+                    Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

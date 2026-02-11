@@ -35,6 +35,7 @@ export interface PaperTrade {
   currentPrice: number;
   amount: number;
   startedAt: Date;
+  closedAt?: Date;
   status: 'active' | 'closed';
   copyMode?: CopyMode;
   spentUsd?: number;
@@ -212,7 +213,11 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, [addresses, paperBudget]);
 
   const closePaperTrade = useCallback((tradeId: string) => {
-    setPaperTrades(prev => prev.map(t => t.id === tradeId ? { ...t, status: 'closed' as const } : t));
+    setPaperTrades(prev => prev.map(t => (
+      t.id === tradeId
+        ? { ...t, status: 'closed' as const, closedAt: new Date() }
+        : t
+    )));
   }, []);
 
   return (
