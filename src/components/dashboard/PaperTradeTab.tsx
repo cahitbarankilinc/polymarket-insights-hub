@@ -35,7 +35,15 @@ const defaultConfig: WalletModeConfig = {
   direction: 'long',
 };
 
-export default function PaperTradeTab({ preselectedId }: { preselectedId?: string | null }) {
+interface PaperTradePrefill {
+  sourceTradeUsd?: number;
+  sharePrice?: number;
+  fixedShares?: number;
+  direction?: 'long' | 'short';
+  leaderFreeBalance?: number;
+}
+
+export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
   const { addresses, paperTrades, startPaperTrade, closePaperTrade, paperBudget, setPaperBudget } = useDashboard();
   const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
   const [collapsed, setCollapsed] = useState(false);
@@ -51,6 +59,37 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
       setCollapsed(false);
     }
   }, [preselectedId]);
+
+  useEffect(() => {
+    if (!setupId || !prefill) return;
+
+    const patch: Partial<WalletModeConfig> = {};
+    if (typeof prefill.sourceTradeUsd === 'number' && Number.isFinite(prefill.sourceTradeUsd)) {
+      patch.sourceTradeUsd = String(prefill.sourceTradeUsd);
+    }
+    if (typeof prefill.sharePrice === 'number' && Number.isFinite(prefill.sharePrice)) {
+      patch.sharePrice = String(prefill.sharePrice);
+    }
+    if (typeof prefill.fixedShares === 'number' && Number.isFinite(prefill.fixedShares)) {
+      patch.fixedShares = String(prefill.fixedShares);
+    }
+    if (typeof prefill.leaderFreeBalance === 'number' && Number.isFinite(prefill.leaderFreeBalance)) {
+      patch.leaderFreeBalance = String(prefill.leaderFreeBalance);
+    }
+    if (prefill.direction) {
+      patch.direction = prefill.direction;
+    }
+
+    if (Object.keys(patch).length) {
+      setWalletConfigs(prev => ({
+        ...prev,
+        [setupId]: {
+          ...(prev[setupId] || defaultConfig),
+          ...patch,
+        },
+      }));
+    }
+  }, [setupId, prefill]);
 
   const currentConfig = setupId ? (walletConfigs[setupId] || defaultConfig) : defaultConfig;
 
@@ -330,8 +369,8 @@ export default function PaperTradeTab({ preselectedId }: { preselectedId?: strin
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Yön</label>
                   <select value={currentConfig.direction} onChange={(e) => setConfig({ direction: e.target.value as 'long' | 'short' })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
-                    <option value="long">BUY (Long)</option>
-                    <option value="short">SELL (Short)</option>
+                    <option value="long">Up</option>
+                    <option value="short">Down</option>
                   </select>
                 </div>
 

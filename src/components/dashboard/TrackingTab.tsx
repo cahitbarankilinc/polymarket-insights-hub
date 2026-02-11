@@ -5,7 +5,39 @@ import { toast } from 'sonner';
 import AddressAnalysis from './AddressAnalysis';
 import { getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
 
-export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: string) => void }) {
+
+const parseNumberFromText = (value?: string | null): number | undefined => {
+  if (!value) return undefined;
+  const match = value.match(/[-+]?\d[\d.,]*/g);
+  if (!match?.length) return undefined;
+  const raw = match[match.length - 1];
+  const normalized = raw.includes(',')
+    ? raw.replace(/\./g, '').replace(',', '.')
+    : raw.replace(/,/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'short' | undefined => {
+  if (!event) return undefined;
+  const outcome = (event.outcome ?? '').toLowerCase();
+  if (outcome.includes('down') || outcome.includes('no')) return 'short';
+  if (outcome.includes('up') || outcome.includes('yes')) return 'long';
+
+  const side = (event.side ?? '').toLowerCase();
+  if (side === 'sell') return 'short';
+  if (side === 'buy') return 'long';
+  return undefined;
+};
+export interface PaperTradePrefill {
+  sourceTradeUsd?: number;
+  sharePrice?: number;
+  fixedShares?: number;
+  direction?: 'long' | 'short';
+  leaderFreeBalance?: number;
+}
+
+export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: string, prefill?: PaperTradePrefill) => void }) {
   const { addresses, categories, removeAddress } = useDashboard();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -191,7 +223,14 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onPaperTrade(addr.id);
+                      const latestEvent = trackerMap[addr.address.toLowerCase()]?.latestEvent || eventsMap[addr.address.toLowerCase()]?.[0];
+                      onPaperTrade(addr.id, {
+                        sourceTradeUsd: latestEvent?.value_usd ?? undefined,
+                        sharePrice: latestEvent?.price ?? undefined,
+                        fixedShares: latestEvent?.size ?? undefined,
+                        direction: resolveDirection(latestEvent),
+                        leaderFreeBalance: parseNumberFromText(addr.polygonscanTopTotalValText),
+                      });
                     }}
                     className="p-2 rounded-lg hover:bg-accent/10 text-muted-foreground hover:text-accent transition-all"
                     title="Paper Trade"
