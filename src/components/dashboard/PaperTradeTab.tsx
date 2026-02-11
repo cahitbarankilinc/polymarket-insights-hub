@@ -72,6 +72,13 @@ const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'shor
   return undefined;
 };
 
+const resolveEventSide = (event: WalletTrackerEvent | undefined): 'BUY' | 'SELL' | undefined => {
+  if (!event?.side) return undefined;
+  const side = event.side.toUpperCase();
+  if (side === 'BUY' || side === 'SELL') return side;
+  return undefined;
+};
+
 interface PaperTradePrefill {
   sourceTradeUsd?: number;
   sharePrice?: number;
@@ -274,7 +281,9 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return wallet?.username || wallet?.label || wallet?.address || '';
   }, [addresses, analysisAddressId]);
 
-  const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades.map((trade) => ({
+  const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades
+    .filter((trade) => trade.side !== 'SELL')
+    .map((trade) => ({
     id: `${trade.id}-buy`,
     side: 'BUY',
     occurredAt: new Date(trade.startedAt),
@@ -285,15 +294,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   })), [analysisTrades]);
 
   const sellActivities = useMemo<TradeActivity[]>(() => analysisTrades
-    .filter((trade) => trade.status === 'closed')
+    .filter((trade) => trade.side === 'SELL' || trade.status === 'closed')
     .map((trade) => ({
       id: `${trade.id}-sell`,
       side: 'SELL',
-      occurredAt: new Date(trade.closedAt || trade.startedAt),
+      occurredAt: new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)),
       marketLabel: trade.marketLabel,
-      price: trade.currentPrice,
+      price: trade.side === 'SELL' ? trade.entryPrice : trade.currentPrice,
       share: trade.amount,
-      usd: trade.sellUsd,
+      usd: trade.side === 'SELL' ? trade.buyUsd : trade.sellUsd,
     })), [analysisTrades]);
 
   const myActivities = useMemo(
@@ -428,22 +437,32 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       let openedTrades = 0;
 
       for (const event of freshEvents) {
+        const eventSide = resolveEventSide(event);
+        if (!eventSide) continue;
+
+        const eventPrice = toPositiveNumber(event.price);
+        const eventSize = toPositiveNumber(event.size);
+        if (eventPrice <= 0 || eventSize <= 0) continue;
+
         const sourceTradeUsd = resolveEventTradeUsd(event, toPositiveNumber(cfg.sourceTradeUsd));
         const eventConfig: WalletModeConfig = {
           ...cfg,
           sourceTradeUsd: String(sourceTradeUsd || cfg.sourceTradeUsd),
-          sharePrice: String(event.price ?? cfg.sharePrice),
-          fixedShares: String(event.size ?? cfg.fixedShares),
+          sharePrice: String(eventPrice),
+          fixedShares: String(eventSize),
           direction: resolveDirection(event) ?? cfg.direction,
         };
-        const tradeUsd = calculateTradeUsd(eventConfig);
+        const tradeUsd = sourceTradeUsd > 0 ? sourceTradeUsd : (eventPrice * eventSize);
         if (tradeUsd <= 0) continue;
 
         const result = startPaperTrade(addressId, {
           strategy: eventConfig.strategy || 'Copy Trading',
-          direction: eventConfig.direction,
+          direction: eventSide === 'BUY' ? 'long' : 'short',
           spendUsd: tradeUsd,
           copyMode: eventConfig.mode,
+          entryPrice: eventPrice,
+          shareAmount: eventSize,
+          side: eventSide,
         });
 
         if (result.ok) openedTrades += 1;

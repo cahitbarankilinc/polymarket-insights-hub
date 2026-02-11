@@ -39,6 +39,7 @@ export interface PaperTrade {
   status: 'active' | 'closed';
   copyMode?: CopyMode;
   spentUsd?: number;
+  side?: 'BUY' | 'SELL';
 }
 
 export interface PaperBudget {
@@ -55,6 +56,9 @@ interface StartPaperTradeInput {
   direction: 'long' | 'short';
   spendUsd: number;
   copyMode?: CopyMode;
+  entryPrice?: number;
+  shareAmount?: number;
+  side?: 'BUY' | 'SELL';
 }
 
 interface DashboardContextType {
@@ -184,7 +188,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const price = randomPrice();
+    const price = input.entryPrice && Number.isFinite(input.entryPrice) && input.entryPrice > 0
+      ? input.entryPrice
+      : randomPrice();
+    const amount = input.shareAmount && Number.isFinite(input.shareAmount) && input.shareAmount > 0
+      ? input.shareAmount
+      : (spendUsd > 0 ? +(spendUsd / price).toFixed(6) : 0.001);
     const trade: PaperTrade = {
       id: Date.now().toString(),
       addressId,
@@ -194,11 +203,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       direction: input.direction,
       entryPrice: price,
       currentPrice: price + (Math.random() - 0.45) * 3000,
-      amount: spendUsd > 0 ? +(spendUsd / price).toFixed(6) : 0.001,
+      amount,
       startedAt: new Date(),
       status: 'active',
       copyMode: input.copyMode,
       spentUsd: spendUsd,
+      side: input.side,
     };
     setPaperTrades(prev => [...prev, trade]);
     return { ok: true };
