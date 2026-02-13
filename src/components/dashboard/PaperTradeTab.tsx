@@ -17,11 +17,11 @@ import { Scatter, ScatterChart, ResponsiveContainer, XAxis, YAxis, CartesianGrid
 import { toast } from 'sonner';
 
 const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: string }> = [
-  { value: 'notional', label: '1:1 Notional Copy', description: 'Onun aldığı USD kadar al.' },
-  { value: 'proportional', label: 'Proportional to Free Balance', description: 'Boştaki bakiyeye göre oranla.' },
-  { value: 'multiplier', label: 'Multiplier Mode', description: 'Onun trade tutarı × k.' },
-  { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Her işlemde sabit USD.' },
-  { value: 'buy-wait', label: 'Al Bekle', description: 'Her markette ilk N alımı sabit USD ile kopyala.' },
+  { value: 'notional', label: '1:1 Notional Copy', description: 'Buy the same USD amount as the leader.' },
+  { value: 'proportional', label: 'Proportional to Free Balance', description: 'Scale by available free balance.' },
+  { value: 'multiplier', label: 'Multiplier Mode', description: 'Leader trade amount × k.' },
+  { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Fixed USD for each trade.' },
+  { value: 'buy-wait', label: 'Buy-and-Wait', description: 'Copy the first N buys per market with a fixed USD amount.' },
 ];
 
 interface WalletModeConfig {
@@ -50,8 +50,8 @@ const defaultConfig: WalletModeConfig = {
   direction: 'long',
 };
 
-const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}`;
-const formatDate = (value: Date) => value.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const formatUsd = (value: number) => `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+const formatDate = (value: Date) => value.toLocaleString('en-US', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
   if (!value) return undefined;
@@ -374,8 +374,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     return {
       startAt: new Date(startTimestamp),
-      totalBudgetText: paperBudget.mode === 'limited' ? `${formatUsd(paperBudget.amount)} (${paperBudget.type === 'daily' ? 'günlük' : 'toplam'})` : 'Sınırsız',
-      freeBudgetText: paperBudget.mode === 'limited' ? formatUsd(paperBudget.remaining) : 'Sınırsız',
+      totalBudgetText: paperBudget.mode === 'limited' ? `${formatUsd(paperBudget.amount)} (${paperBudget.type === 'daily' ? 'daily' : 'total'})` : 'Unlimited',
+      freeBudgetText: paperBudget.mode === 'limited' ? formatUsd(paperBudget.remaining) : 'Unlimited',
       inGameMoney,
       totalTransactions: myActivities.length,
       totalBuy,
@@ -409,7 +409,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const applyBudget = () => {
     const nextBudget = resolveBudgetDraft();
     setPaperBudget(nextBudget);
-    toast.success('Bütçe ayarları güncellendi');
+    toast.success('Budget settings updated');
   };
 
   const calculateTradeUsd = (config: WalletModeConfig, budgetDraft?: BudgetDraft) => {
@@ -565,10 +565,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       setCopySessionErrors((prev) => ({ ...prev, [addressId]: null }));
 
       if (openedTrades > 0) {
-        toast.success(`${openedTrades} yeni aktivite kopyalandı`);
+        toast.success(`${openedTrades} new activities copied`);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Copy trade senkronizasyonu sırasında hata oluştu';
+      const message = error instanceof Error ? error.message : 'An error occurred during copy-trade synchronization';
       setCopySessionErrors((prev) => ({ ...prev, [addressId]: message }));
       toast.error(message);
       setCopySessions((prev) => {
@@ -601,21 +601,21 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   }, [copySessions, syncWalletCopyTrades]);
 
   const handleStart = async () => {
-    if (!setupId) return toast.error('Önce bir cüzdan seçin');
+    if (!setupId) return toast.error('Select a wallet first');
 
     const nextBudget = resolveBudgetDraft();
     if (currentConfig.mode === 'proportional' && nextBudget.mode !== 'limited') {
-      return toast.error('Proportional modunda bütçe tipi Limitli olmalı');
+      return toast.error('Budget type must be Limited in proportional mode');
     }
 
     setPaperBudget(nextBudget);
 
     const latestConfig = await loadAutoConfig(setupId) || currentConfig;
     const tradeUsd = calculateTradeUsd(latestConfig, nextBudget);
-    if (tradeUsd <= 0) return toast.error('Trade tutarı 0 dan büyük olmalı');
+    if (tradeUsd <= 0) return toast.error('Trade amount must be greater than 0');
 
     const selectedAddress = addresses.find((address) => address.id === setupId);
-    if (!selectedAddress) return toast.error('Cüzdan bulunamadı');
+    if (!selectedAddress) return toast.error('Wallet not found');
 
     try {
       const payload = await getWalletEventsWithStats(selectedAddress.address);
@@ -632,10 +632,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       }));
       setCopySessionErrors((prev) => ({ ...prev, [setupId]: null }));
 
-      toast.success('Copy trade takip sistemi başlatıldı. Yeni aktiviteler otomatik kopyalanacak.');
+      toast.success('Copy-trade tracking started. New activities will be copied automatically.');
       setCollapsed(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Takip başlatılırken event verisi alınamadı';
+      const message = error instanceof Error ? error.message : 'Failed to fetch event data while starting tracking';
       setCopySessionErrors((prev) => ({ ...prev, [setupId]: message }));
       toast.error(message);
     }
@@ -666,14 +666,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-bold text-foreground">Paper Trading</h2>
-          <p className="text-xs text-muted-foreground">Bütçe + cüzdan bazlı copy trade test ortamı</p>
+          <p className="text-xs text-muted-foreground">Budget + wallet based copy-trade sandbox</p>
         </div>
         {view === 'analysis' && (
           <button
             onClick={() => setView('paper')}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs border border-border/30 bg-secondary/40 hover:bg-secondary/70"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Paper Trade ekranına dön
+            <ArrowLeft className="w-3.5 h-3.5" /> Back to Paper Trade
           </button>
         )}
       </div>
@@ -681,8 +681,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       {view === 'paper' && (
         <>
           <div className="glass-card p-5 mb-6">
-            <h3 className="text-sm font-semibold text-foreground mb-4">Takip Edilen Cüzdanlar</h3>
-            <label className="text-xs font-medium text-muted-foreground mb-2 block">Copy trade için cüzdan seç</label>
+            <h3 className="text-sm font-semibold text-foreground mb-4">Tracked Wallets</h3>
+            <label className="text-xs font-medium text-muted-foreground mb-2 block">Select wallet for copy trading</label>
             <div className="flex items-center gap-3">
               <Wallet className="w-4 h-4 text-primary" />
               <select
@@ -690,7 +690,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                 onChange={(e) => { setSetupId(e.target.value || null); setCollapsed(false); }}
                 className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
               >
-                <option value="">Cüzdan seçin...</option>
+                <option value="">Select wallet...</option>
                 {addresses.map((addr) => (
                   <option key={addr.id} value={addr.id}>{(addr.username || addr.label || addr.address)} • {addr.category}</option>
                 ))}
@@ -698,7 +698,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             </div>
             {Object.entries(copySessions).some(([, session]) => session.status !== 'idle') && (
               <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-2 text-xs text-primary">
-                Takip aktif: {Object.entries(copySessions)
+                Active tracking: {Object.entries(copySessions)
                   .filter(([, session]) => session.status !== 'idle')
                   .map(([walletId]) => addresses.find((addr) => addr.id === walletId)?.username || addresses.find((addr) => addr.id === walletId)?.label || walletId)
                   .join(', ')}
@@ -707,41 +707,41 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           </div>
 
           <div className="glass-card p-5 mb-6">
-            <h3 className="text-sm font-semibold text-foreground mb-4">Bütçe Yönetimi</h3>
+            <h3 className="text-sm font-semibold text-foreground mb-4">Budget Management</h3>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-2 block">Bütçe Tipi</label>
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">Budget Type</label>
                 <div className="flex gap-2 mb-2">
                   <button
                     onClick={() => setBudgetMode('unlimited')}
                     disabled={currentConfig.mode === 'proportional'}
                     className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'unlimited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'} disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
-                    Sınırsız
+                    Unlimited
                   </button>
-                  <button onClick={() => setBudgetMode('limited')} className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'limited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}>Limitli</button>
+                  <button onClick={() => setBudgetMode('limited')} className={`px-3 py-2 rounded-lg text-xs border ${budgetMode === 'limited' ? 'bg-primary/15 text-primary border-primary/30' : 'bg-secondary/40 border-border/30 text-muted-foreground'}`}>Limited</button>
                 </div>
                 {currentConfig.mode === 'proportional' && (
                   <p className="text-[11px] text-muted-foreground mb-2">
-                    Proportional modunda bütçe tipi otomatik olarak <span className="font-semibold text-foreground">Limitli</span> tutulur.
+                    In proportional mode, budget type is automatically set to <span className="font-semibold text-foreground">Limited</span>.
                   </p>
                 )}
                 {budgetMode === 'limited' && (
                   <div className="grid grid-cols-2 gap-2 mb-2">
                     <select value={budgetType} onChange={(e) => setBudgetType(e.target.value as 'daily' | 'total')} className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm">
-                      <option value="daily">Günlük</option>
-                      <option value="total">Toplam</option>
+                      <option value="daily">Daily</option>
+                      <option value="total">Total</option>
                     </select>
                     <input type="number" value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="USD" />
                   </div>
                 )}
-                <button onClick={applyBudget} className="px-3 py-2 rounded-lg text-xs bg-primary/10 text-primary border border-primary/30">Bütçeyi Kaydet</button>
+                <button onClick={applyBudget} className="px-3 py-2 rounded-lg text-xs bg-primary/10 text-primary border border-primary/30">Save Budget</button>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-xs font-medium text-muted-foreground">Copy Trade Setup</label>
-                  <button onClick={() => setCollapsed(!collapsed)} className="text-xs text-muted-foreground inline-flex items-center gap-1">{collapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />} {collapsed ? 'Aç' : 'Daralt'}</button>
+                  <button onClick={() => setCollapsed(!collapsed)} className="text-xs text-muted-foreground inline-flex items-center gap-1">{collapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />} {collapsed ? 'Expand' : 'Collapse'}</button>
                 </div>
                 {!collapsed && (
                   <div className="space-y-2">
@@ -762,43 +762,43 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     </select>
                     <p className="text-[11px] text-muted-foreground">{COPY_MODE_OPTIONS.find((item) => item.value === currentConfig.mode)?.description}</p>
                     <div className="rounded-lg bg-secondary/20 border border-border/20 p-2 text-[11px] text-muted-foreground">
-                      Source USD ve Leader bakiye değerleri otomatik olarak takip edilen cüzdandan çekilir.
+                      Source USD and leader balance values are automatically pulled from the tracked wallet.
                     </div>
                     {currentConfig.mode === 'multiplier' && (
                       <label className="block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Multiplier değeri (k)</span>
-                        <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Örn: 1.5" />
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Multiplier value (k)</span>
+                        <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="e.g. 1.5" />
                       </label>
                     )}
                     {currentConfig.mode === 'fixed-amount' && (
                       <label className="block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Her işlem için sabit alım tutarı (USD)</span>
-                        <input type="number" min="0" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Örn: 50" />
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Fixed buy amount per trade (USD)</span>
+                        <input type="number" min="0" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="e.g. 50" />
                       </label>
                     )}
                     {currentConfig.mode === 'buy-wait' && (
                       <>
                         <label className="block">
-                          <span className="mb-1 block text-[11px] text-muted-foreground">Market başına kopyalanacak maksimum alım adedi</span>
-                          <input type="number" min="1" value={currentConfig.buyWaitLimit} onChange={(e) => setConfig({ buyWaitLimit: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Örn: 2" />
+                          <span className="mb-1 block text-[11px] text-muted-foreground">Maximum number of buys to copy per market</span>
+                          <input type="number" min="1" value={currentConfig.buyWaitLimit} onChange={(e) => setConfig({ buyWaitLimit: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="e.g. 2" />
                         </label>
                         <label className="block">
-                          <span className="mb-1 block text-[11px] text-muted-foreground">Her alımda kullanılacak sabit tutar (USD)</span>
-                          <input type="number" min="0" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Örn: 50" />
+                          <span className="mb-1 block text-[11px] text-muted-foreground">Fixed amount to use for each buy (USD)</span>
+                          <input type="number" min="0" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="e.g. 50" />
                         </label>
                       </>
                     )}
-                    <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Strateji" />
-                    <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig, resolveBudgetDraft()).toFixed(2)}</span></p>
+                    <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Strategy" />
+                    <p className="text-xs text-muted-foreground">Calculated trade amount: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig, resolveBudgetDraft()).toFixed(2)}</span></p>
                   </div>
                 )}
                 {!isSelectedRunning ? (
                   <button onClick={handleStart} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
-                    <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Başlat
+                    <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Selected wallet')} - Start Tracking
                   </button>
                 ) : (
                   <button onClick={() => setupId && handleStop(setupId)} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20">
-                    {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Durdur
+                    {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Selected wallet')} - Stop Tracking
                   </button>
                 )}
               </div>
@@ -806,8 +806,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           </div>
 
           <div className="mb-6">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTIF TRADELER ({activeTrades.length})</h3>
-            {activeTrades.length === 0 && <div className="glass-card p-6 text-center text-muted-foreground text-sm">Henüz aktif trade yok</div>}
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">ACTIVE TRADES ({activeTrades.length})</h3>
+            {activeTrades.length === 0 && <div className="glass-card p-6 text-center text-muted-foreground text-sm">No active trades yet</div>}
             <div className="space-y-2">
               {activeTrades.map(trade => {
                 const pnl = (trade.currentPrice - trade.entryPrice) * trade.amount * (trade.direction === 'long' ? 1 : -1);
@@ -820,17 +820,17 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.direction === 'long' ? 'bg-accent/15 text-accent' : 'bg-destructive/15 text-destructive'}`}>{trade.direction.toUpperCase()}</span>
                         <span className="text-xs font-medium text-foreground">{trade.strategy}</span>
                         <button type="button" onClick={(e) => { e.stopPropagation(); openAnalysis(trade.addressId); }} className="text-[10px] text-primary hover:underline">{trade.walletName}</button>
-                        <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold">AKTİF</span>
+                        <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold">ACTIVE</span>
                       </div>
-                      <span className="text-[11px] text-muted-foreground">Analiz için tıkla →</span>
+                      <span className="text-[11px] text-muted-foreground">Click for analysis →</span>
                     </div>
                     <p className="font-mono text-[10px] text-muted-foreground truncate mb-2">{trade.address}</p>
                     <div className="flex items-center justify-between">
                       <div className="grid grid-cols-4 gap-4">
-                        <div><p className="text-[10px] text-muted-foreground">Giriş</p><p className="text-sm font-mono font-medium text-foreground">${trade.entryPrice.toLocaleString()}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Güncel</p><p className="text-sm font-mono font-medium text-foreground">${trade.currentPrice.toLocaleString()}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Tutar</p><p className="text-sm font-mono font-medium text-foreground">${(trade.spentUsd || 0).toFixed(2)}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Başlangıç</p><p className="text-xs font-medium text-foreground">{formatDate(new Date(trade.startedAt))}</p></div>
+                        <div><p className="text-[10px] text-muted-foreground">Entry</p><p className="text-sm font-mono font-medium text-foreground">${trade.entryPrice.toLocaleString()}</p></div>
+                        <div><p className="text-[10px] text-muted-foreground">Current</p><p className="text-sm font-mono font-medium text-foreground">${trade.currentPrice.toLocaleString()}</p></div>
+                        <div><p className="text-[10px] text-muted-foreground">Amount</p><p className="text-sm font-mono font-medium text-foreground">${(trade.spentUsd || 0).toFixed(2)}</p></div>
+                        <div><p className="text-[10px] text-muted-foreground">Started</p><p className="text-xs font-medium text-foreground">{formatDate(new Date(trade.startedAt))}</p></div>
                       </div>
                       <div className="text-right">
                         <p className={`text-lg font-bold ${isProfit ? 'text-accent' : 'text-destructive'}`}>{isProfit ? '+' : ''}{pnl.toFixed(2)} $</p>
@@ -839,10 +839,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     </div>
                     <div className="mt-3 border-t border-border/20 pt-2">
                       <button
-                        onClick={(e) => { e.stopPropagation(); closePaperTrade(trade.id); toast.success('Trade kapatıldı'); }}
+                        onClick={(e) => { e.stopPropagation(); closePaperTrade(trade.id); toast.success('Trade closed'); }}
                         className="px-3 py-1 rounded-lg text-xs font-medium bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20"
                       >
-                        <X className="w-3 h-3 inline mr-1" /> Kapat
+                        <X className="w-3 h-3 inline mr-1" /> Close
                       </button>
                     </div>
                   </div>
@@ -853,31 +853,31 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
           {runningSessions.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">ACTIVE TRACKING ({runningSessions.length})</h3>
               <div className="space-y-2">
                 {runningSessions.map(({ addressId, session, walletName, walletAddress }) => {
                   const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
-                  const statusLabel = session.status === 'syncing' ? 'SENKRONİZE EDİLİYOR' : 'TAKİP AKTİF';
+                  const statusLabel = session.status === 'syncing' ? 'SYNCING' : 'TRACKING ACTIVE';
                   return (
                     <div key={addressId} className="glass-card p-4 border border-primary/20">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <p className="text-xs font-semibold text-foreground">{walletName}</p>
                           <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan takip ediliyor. Yeni aktivite geldiğinde trade otomatik oluşacak.</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">This wallet is being tracked. New trades will be created automatically when activity arrives.</p>
                           {copySessionErrors[addressId] && (
-                            <p className="mt-2 text-[11px] text-destructive">Hata: {copySessionErrors[addressId]}</p>
+                            <p className="mt-2 text-[11px] text-destructive">Error: {copySessionErrors[addressId]}</p>
                           )}
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="px-2 py-1 rounded text-[10px] font-semibold bg-primary/15 text-primary">{statusLabel}</span>
-                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Active Trades: {activeTradeCount}</span>
                           <button
                             type="button"
                             onClick={() => openAnalysis(addressId)}
                             className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                           >
-                            Analize Git
+                            Go to Analysis
                           </button>
                         </div>
                       </div>
@@ -890,7 +890,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
           {closedTrades.length > 0 && (
             <div>
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Kapatılan Tradeler ({closedTrades.length})</h3>
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Closed Trades ({closedTrades.length})</h3>
               <div className="space-y-2 opacity-60">
                 {closedTrades.map(trade => {
                   const pnl = (trade.currentPrice - trade.entryPrice) * trade.amount * (trade.direction === 'long' ? 1 : -1);
@@ -914,19 +914,19 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         <div className="glass-card p-4 mb-6">
           {!analysisStats ? (
             <div className="text-center py-2">
-              <h3 className="text-sm font-semibold text-foreground mb-2">Copy Trade Analizi • {analysisWalletName || 'Seçili cüzdan'}</h3>
-              <p className="text-sm text-muted-foreground">Henüz bu cüzdan için oluşmuş trade yok. Takip aktifse yeni işlem geldiğinde burada görünecek.</p>
+              <h3 className="text-sm font-semibold text-foreground mb-2">Copy Trade Analysis • {analysisWalletName || 'Selected wallet'}</h3>
+              <p className="text-sm text-muted-foreground">No trades have been created for this wallet yet. If tracking is active, new trades will appear here.</p>
             </div>
           ) : (
             <>
-              <h3 className="text-sm font-semibold text-foreground mb-3">Copy Trade Analizi • {analysisWalletName}</h3>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Copy Trade Analysis • {analysisWalletName}</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                 {[
-                  { label: 'TRADE BAŞLANGIÇ', value: formatDate(analysisStats.startAt) },
+                  { label: 'TRADE START', value: formatDate(analysisStats.startAt) },
                   { label: 'TOTAL BUDGET', value: analysisStats.totalBudgetText },
-                  { label: 'SERBEST PARA', value: analysisStats.freeBudgetText },
-                  { label: 'OYUNDAKİ PARA', value: formatUsd(analysisStats.inGameMoney) },
-                  { label: 'TOPLAM İŞLEM', value: String(analysisStats.totalTransactions) },
+                  { label: 'FREE BALANCE', value: analysisStats.freeBudgetText },
+                  { label: 'CAPITAL IN PLAY', value: formatUsd(analysisStats.inGameMoney) },
+                  { label: 'TOTAL TRANSACTIONS', value: String(analysisStats.totalTransactions) },
                   { label: 'TOTAL BUY', value: formatUsd(analysisStats.totalBuy) },
                   { label: 'TOTAL SELL', value: formatUsd(analysisStats.totalSell) },
                 ].map((stat) => (
@@ -936,18 +936,18 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
                 <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
-                  <h4 className="text-xs font-semibold text-foreground mb-3">Share/Adet Grafiği</h4>
-                  <div className="h-64"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" /><XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" /><YAxis dataKey="share" type="number" name="Share" stroke="hsl(var(--muted-foreground))" /><Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} /><Scatter data={sharePriceData.map((item) => ({ price: item.price, share: item.share }))} fill="hsl(var(--primary))" /></ScatterChart></ResponsiveContainer></div>
+                  <h4 className="text-xs font-semibold text-foreground mb-3">Share/Quantity Chart</h4>
+                  <div className="h-64"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" /><XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" /><YAxis dataKey="share" type="number" name="Share" stroke="hsl(var(--muted-foreground))" /><Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 6 })} /><Scatter data={sharePriceData.map((item) => ({ price: item.price, share: item.share }))} fill="hsl(var(--primary))" /></ScatterChart></ResponsiveContainer></div>
                 </div>
                 <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
-                  <h4 className="text-xs font-semibold text-foreground mb-3">Price/Adet Grafiği</h4>
-                  <div className="h-64"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" /><XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" /><YAxis dataKey="usdSpent" type="number" name="USD" stroke="hsl(var(--muted-foreground))" /><Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('tr-TR', { style: 'currency', currency: 'USD' })} /><Scatter data={sharePriceData.map((item) => ({ price: item.price, usdSpent: item.usdSpent }))} fill="hsl(var(--accent))" /></ScatterChart></ResponsiveContainer></div>
+                  <h4 className="text-xs font-semibold text-foreground mb-3">Price/Quantity Chart</h4>
+                  <div className="h-64"><ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" /><XAxis dataKey="price" type="number" name="Price" tickFormatter={(v) => Number(v).toFixed(2)} stroke="hsl(var(--muted-foreground))" /><YAxis dataKey="usdSpent" type="number" name="USD" stroke="hsl(var(--muted-foreground))" /><Tooltip cursor={{ strokeDasharray: '4 4' }} formatter={(value: number) => Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} /><Scatter data={sharePriceData.map((item) => ({ price: item.price, usdSpent: item.usdSpent }))} fill="hsl(var(--accent))" /></ScatterChart></ResponsiveContainer></div>
                 </div>
               </div>
 
 
               <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
-                <h4 className="text-xs font-semibold text-foreground mb-2">Son Aktiviteler</h4>
+                <h4 className="text-xs font-semibold text-foreground mb-2">Recent Activities</h4>
                 <div className="space-y-2">
                   {myActivities.slice(0, 30).map((activity) => (
                     <div key={activity.id} className="flex items-center justify-between border-b border-border/20 pb-2 last:border-0 last:pb-0">
@@ -957,7 +957,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         </div>
                         <div><p className="text-xs font-medium text-foreground">{activity.marketLabel}</p><p className="text-[10px] text-muted-foreground">{activity.side} • {formatDate(activity.occurredAt)}</p></div>
                       </div>
-                      <p className="text-xs text-foreground text-right">Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}</p>
+                      <p className="text-xs text-foreground text-right">Price: {activity.price.toLocaleString('en-US', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('en-US', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
                     </div>
                   ))}
                 </div>

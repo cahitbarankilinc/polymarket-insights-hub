@@ -17,17 +17,17 @@ export default function AddAddressTab() {
 
   const handleSubmit = async () => {
     if (!profileUrl.trim()) {
-      toast.error('Lütfen bir Polymarket profil linki girin');
+      toast.error('Please enter a Polymarket profile URL');
       return;
     }
     if (!isProbablyUrl(profileUrl)) {
-      toast.error('Lütfen geçerli bir profil linki girin (https://...)');
+      toast.error('Please enter a valid profile URL (https://...)');
       return;
     }
 
     const cat = isAddingCategory ? newCategory.trim() : selectedCategory;
     if (!cat) {
-      toast.error('Lütfen bir kategori seçin veya ekleyin');
+      toast.error('Please select or add a category');
       return;
     }
 
@@ -37,7 +37,7 @@ export default function AddAddressTab() {
       const normalizedAddress = resolvedProfile.proxyWallet?.trim().toLowerCase();
 
       if (!normalizedAddress || !/^0x[a-fA-F0-9]{40}$/.test(normalizedAddress)) {
-        toast.error('Linkten geçerli bir proxy wallet adresi alınamadı');
+        toast.error('Could not resolve a valid proxy wallet address from this URL');
         return;
       }
 
@@ -60,7 +60,7 @@ export default function AddAddressTab() {
       try {
         await startWalletTracking(normalizedAddress);
       } catch {
-        toast.error('Adres eklendi ama local takip başlatılamadı');
+        toast.error('Address added, but local tracking could not be started');
       }
 
       setProfileUrl('');
@@ -68,9 +68,9 @@ export default function AddAddressTab() {
       setNewCategory('');
       setNote('');
       setIsAddingCategory(false);
-      toast.success('Profil başarıyla eklendi!');
+      toast.success('Profile added successfully!');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Profil verisi alınamadı');
+      toast.error(error instanceof Error ? error.message : 'Failed to fetch profile data');
     } finally {
       setIsSubmitting(false);
     }
@@ -80,22 +80,22 @@ export default function AddAddressTab() {
     <div className="max-w-2xl mx-auto animate-slide-up">
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold mb-2">
-          <span className="gradient-text">Yeni Adres</span> Takibe Al
+          <span className="gradient-text">New Address</span> Start Tracking
         </h2>
-        <p className="text-muted-foreground text-sm">Polymarket profil linkini ekle, proxy wallet ile local klasörde NDJSON takip başlat</p>
+        <p className="text-muted-foreground text-sm">Add a Polymarket profile URL and start NDJSON tracking locally using the proxy wallet</p>
       </div>
 
       <div className="glass-card p-6 space-y-6">
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <LinkIcon className="w-4 h-4 text-primary" />
-            Polymarket Profil Linki
+            Polymarket Profile URL
           </label>
           <input
             type="text"
             value={profileUrl}
             onChange={(e) => setProfileUrl(e.target.value)}
-            placeholder="https://polymarket.com/@kullanici?tab=activity"
+            placeholder="https://polymarket.com/@username?tab=activity"
             className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 text-sm transition-all"
           />
         </div>
@@ -103,7 +103,7 @@ export default function AddAddressTab() {
         <div className="space-y-3">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Tag className="w-4 h-4 text-primary" />
-            Kategori <span className="text-destructive">*</span>
+            Category <span className="text-destructive">*</span>
           </label>
 
           <div className="flex flex-wrap gap-2">
@@ -139,7 +139,7 @@ export default function AddAddressTab() {
                 }
               `}
             >
-              <Plus className="w-3 h-3" /> Yeni Kategori
+              <Plus className="w-3 h-3" /> New Category
             </button>
           </div>
 
@@ -148,7 +148,7 @@ export default function AddAddressTab() {
               type="text"
               value={newCategory}
               onChange={(e) => setNewCategory(e.target.value)}
-              placeholder="Yeni kategori adı..."
+              placeholder="New category name..."
               autoFocus
               className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-accent/30 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30 text-sm transition-all animate-fade-in"
             />
@@ -157,12 +157,12 @@ export default function AddAddressTab() {
 
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-            Cüzdan Notu <span className="text-muted-foreground text-xs">(Opsiyonel)</span>
+            Wallet Note <span className="text-muted-foreground text-xs">(Optional)</span>
           </label>
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Bu cüzdan hakkında kısa notlar..."
+            placeholder="Add short notes about this wallet..."
             rows={3}
             className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 text-sm transition-all resize-y"
           />
@@ -174,15 +174,15 @@ export default function AddAddressTab() {
           className="w-full py-3 rounded-lg font-semibold text-sm transition-all duration-300 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 hover:shadow-[0_0_20px_hsl(174_72%_50%/0.2)] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <Plus className="w-4 h-4 inline mr-2" />
-          {isSubmitting ? 'Profil Çözümleniyor...' : 'Adresi Takibe Al'}
+          {isSubmitting ? 'Resolving profile...' : 'Track Address'}
         </button>
       </div>
 
       <div className="grid grid-cols-3 gap-3 mt-6">
         {[
-          { label: 'Anlık Takip', desc: 'Tüm işlemler canlı' },
-          { label: 'Akıllı Analiz', desc: 'AI destekli insight' },
-          { label: 'Paper Trade', desc: 'Risksiz strateji test' },
+          { label: 'Real-time Tracking', desc: 'All trades live' },
+          { label: 'Smart Analysis', desc: 'AI-powered insights' },
+          { label: 'Paper Trade', desc: 'Risk-free strategy testing' },
         ].map((item, i) => (
           <div key={i} className="stat-card text-center">
             <p className="text-xs font-semibold text-primary mb-1">{item.label}</p>

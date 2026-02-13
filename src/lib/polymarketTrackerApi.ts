@@ -60,7 +60,7 @@ export async function resolvePolymarketProfile(profileUrl: string): Promise<Poly
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'Profil verisi alınamadı');
+    throw new Error(text || 'Failed to fetch profile data');
   }
   return response.json() as Promise<PolymarketProfileResponse>;
 }
@@ -73,7 +73,7 @@ export async function startWalletTracking(address: string) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'Takip başlatılamadı');
+    throw new Error(text || 'Failed to start tracking');
   }
   return response.json();
 }
@@ -81,7 +81,7 @@ export async function startWalletTracking(address: string) {
 export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
   const response = await fetch('/api/tracker/list');
   if (!response.ok) {
-    throw new Error('Takip listesi okunamadı');
+    throw new Error('Failed to load tracking list');
   }
   const data = await response.json() as { wallets: WalletTrackerInfo[] };
   return data.wallets;
@@ -90,7 +90,7 @@ export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
 export async function getWalletEventsWithStats(address: string): Promise<WalletEventsResponse> {
   const response = await fetch(`/api/tracker/events/${address.toLowerCase()}`);
   if (!response.ok) {
-    throw new Error('Cüzdan eventleri alınamadı');
+    throw new Error('Failed to fetch wallet events');
   }
 
   const data = await response.json() as WalletEventsResponse | WalletTrackerEvent[];
@@ -123,7 +123,7 @@ export async function requestCopytradeAdvisor(context: string): Promise<Copytrad
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'OpenAI analizi alınamadı');
+    throw new Error(text || 'Failed to fetch OpenAI analysis');
   }
 
   return response.json() as Promise<CopytradeAdvisorResponse>;

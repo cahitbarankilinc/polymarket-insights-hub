@@ -71,16 +71,16 @@ const toEventDate = (event: WalletTrackerEvent) => {
   return new Date(eventTimeMs);
 };
 
-const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 6 })}`;
+const formatUsd = (value: number) => `$${value.toLocaleString('en-US', { maximumFractionDigits: 6 })}`;
 
 const formatCurrency = (value: number | undefined) => {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-';
-  return value.toLocaleString('tr-TR', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 };
 
 const formatDecimal = (value: number | undefined) => {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-';
-  return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
 };
 
 const stripEtTimeSuffix = (value: string) => {
@@ -378,7 +378,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       setAdvisorUpdatedAt(updatedAt);
       localStorage.setItem(advisorStorageKey, JSON.stringify({ result: response.analysis, updatedAt }));
     } catch (error) {
-      setAdvisorError(error instanceof Error ? error.message : 'OpenAI analizi alınamadı');
+      setAdvisorError(error instanceof Error ? error.message : 'Failed to fetch OpenAI analysis');
     } finally {
       setAdvisorLoading(false);
     }
@@ -391,7 +391,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         onClick={onBack}
         className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"
       >
-        <ArrowLeft className="w-4 h-4" /> Takip Listesine Dön
+        <ArrowLeft className="w-4 h-4" /> Back to Tracking List
       </button>
 
       {/* Header */}
@@ -399,7 +399,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <h2 className="text-lg font-bold text-foreground">{address.username || address.label || 'Anonim Adres'}</h2>
+              <h2 className="text-lg font-bold text-foreground">{address.username || address.label || 'Anonymous Address'}</h2>
               <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
                 {address.category}
               </span>
@@ -418,18 +418,18 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
       <div className="glass-card p-4 mb-4">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-foreground">Cüzdan Notu</h3>
+          <h3 className="text-sm font-semibold text-foreground">Wallet Note</h3>
           <button
             onClick={handleSaveNote}
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-all"
           >
-            <Save className="w-3.5 h-3.5" /> Kaydet
+            <Save className="w-3.5 h-3.5" /> Save
           </button>
         </div>
         <textarea
           value={noteDraft}
           onChange={(e) => setNoteDraft(e.target.value)}
-          placeholder="Bu wallet için gözlemlerini not al..."
+          placeholder="Write your observations for this wallet..."
           rows={3}
           className="w-full px-3 py-2 rounded-lg bg-secondary/40 border border-border/40 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 resize-y"
         />
@@ -438,9 +438,9 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Profile Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
         {[
-          { label: 'Serbest Para', value: address.polygonscanTopTotalValText || '-' },
-          { label: 'Oyundaki Para', value: formatCurrency(address.amount) },
-          { label: 'Toplam Oyun', value: formatDecimal(address.trades) },
+          { label: 'Free Balance', value: address.polygonscanTopTotalValText || '-' },
+          { label: 'Capital in Play', value: formatCurrency(address.amount) },
+          { label: 'Total Markets', value: formatDecimal(address.trades) },
           { label: 'Biggest Win', value: formatCurrency(address.largestWin) },
           { label: 'Followers', value: formatDecimal(address.views) },
           { label: 'PnL', value: formatCurrency(address.pnl) },
@@ -457,8 +457,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         {[
-          { label: 'Toplam İşlem', value: String(stats.total), icon: Activity },
-          { label: 'Son 24s', value: String(stats.last24h), icon: Clock },
+          { label: 'Total Transactions', value: String(stats.total), icon: Activity },
+          { label: 'Last 24h', value: String(stats.last24h), icon: Clock },
           { label: 'BUY Today', value: formatUsd(stats.buyTodayUsd), icon: ArrowDownRight, color: 'text-accent' },
           { label: 'SELL Today', value: formatUsd(stats.sellTodayUsd), icon: ArrowUpRight, color: 'text-warning' },
         ].map((stat, i) => (
@@ -475,8 +475,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground">Share/Adet Grafiği</h3>
-          <p className="text-xs text-muted-foreground mb-3">Yoğun veri geldiğinde adaptif fiyat kovası modeli ile gruplama uygulanır, böylece grafik akıcı kalır.</p>
+          <h3 className="text-sm font-semibold text-foreground">Share/Quantity Chart</h3>
+          <p className="text-xs text-muted-foreground mb-3">When data is dense, adaptive price-bucket grouping is applied to keep the chart smooth.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -503,10 +503,10 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               <Tooltip
                 formatter={(value, name) => {
                   if (name === 'Price') {
-                    return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 2 }), 'Price'];
+                    return [Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 }), 'Price'];
                   }
 
-                  return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 6 }), 'Share'];
+                  return [Number(value).toLocaleString('en-US', { maximumFractionDigits: 6 }), 'Share'];
                 }}
                 labelFormatter={() => 'BUY'}
                 contentStyle={{
@@ -531,8 +531,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         </div>
 
         <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-foreground">Price/Adet Grafiği</h3>
-          <p className="text-xs text-muted-foreground mb-3">Aynı model USD dağılımına da uygulanır; okunabilirlik korunurken donmalar azaltılır.</p>
+          <h3 className="text-sm font-semibold text-foreground">Price/Quantity Chart</h3>
+          <p className="text-xs text-muted-foreground mb-3">The same model is applied to USD distribution to preserve readability and reduce UI freezes.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -559,7 +559,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               <Tooltip
                 formatter={(value, name) => {
                   if (name === 'Price') {
-                    return [Number(value).toLocaleString('tr-TR', { maximumFractionDigits: 2 }), 'Price'];
+                    return [Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 }), 'Price'];
                   }
 
                   return [formatUsd(Number(value)), 'Harcanan USD'];
@@ -588,7 +588,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       </div>
 
       <div className="glass-card p-4 mb-4">
-        <h3 className="text-sm font-semibold text-foreground mb-3">En Çok Harcama Yapılan İlk 10 Market</h3>
+        <h3 className="text-sm font-semibold text-foreground mb-3">Top 10 Markets by Spending</h3>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[560px] text-sm">
             <thead>
@@ -606,12 +606,12 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 </th>
                 <th className="py-2 pr-2 text-xs font-medium text-right">
                   <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('totalUsd')}>
-                    Toplam USD <span className="text-[10px]">{sortIndicator('totalUsd')}</span>
+                    Total USD <span className="text-[10px]">{sortIndicator('totalUsd')}</span>
                   </button>
                 </th>
                 <th className="py-2 text-xs font-medium text-right">
                   <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => handleSort('tradeCount')}>
-                    İşlem <span className="text-[10px]">{sortIndicator('tradeCount')}</span>
+                    Trades <span className="text-[10px]">{sortIndicator('tradeCount')}</span>
                   </button>
                 </th>
               </tr>
@@ -628,22 +628,22 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               ))}
               {topMarketSpend.length === 0 && (
                 <tr>
-                  <td className="py-4 text-center text-muted-foreground" colSpan={5}>Henüz market bazlı işlem verisi yok</td>
+                  <td className="py-4 text-center text-muted-foreground" colSpan={5}>No market-level transaction data yet</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
         <p className="mt-3 text-[11px] text-muted-foreground">
-          Not: Market adlarının sonundaki zaman damgası parçaları (örn. -1770746400) ve saat eki (örn. 1pm Et) normalize edilerek aynı strateji marketinde birleştirildi.
+          Note: Trailing timestamp parts in market names (e.g. -1770746400) and time suffixes (e.g. 1pm ET) are normalized and merged under the same strategy market.
         </p>
       </div>
 
       <div className="glass-card p-4 mb-4">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2"><Bot className="w-4 h-4" /> OpenAI ChatGPT Analizi</h3>
-            <p className="text-xs text-muted-foreground">Mevcut wallet sayfası verileri context olarak gönderilir.</p>
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2"><Bot className="w-4 h-4" /> OpenAI ChatGPT Analysis</h3>
+            <p className="text-xs text-muted-foreground">Current wallet page data is sent as context.</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -652,7 +652,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               onClick={runAdvisor}
               disabled={advisorLoading}
             >
-              {advisorLoading ? 'Gönderiliyor...' : 'OpenAI ile Analiz Et'}
+              {advisorLoading ? 'Sending...' : 'Analyze with OpenAI'}
             </button>
             <button
               type="button"
@@ -660,27 +660,27 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               onClick={runAdvisor}
               disabled={advisorLoading}
             >
-              Tekrar
+              Retry
             </button>
           </div>
         </div>
 
         {advisorUpdatedAt && (
-          <p className="text-[11px] text-muted-foreground mb-2">Son analiz: {formatBerlin(advisorUpdatedAt)}</p>
+          <p className="text-[11px] text-muted-foreground mb-2">Last analysis: {formatBerlin(advisorUpdatedAt)}</p>
         )}
         {advisorError && <p className="text-xs text-destructive mb-2">{advisorError}</p>}
         <div className="rounded-md border border-border/60 bg-background/40 p-3 min-h-[84px]">
           {advisorResult ? (
             <p className="text-sm text-foreground whitespace-pre-wrap">{advisorResult}</p>
           ) : (
-            <p className="text-xs text-muted-foreground">Henüz analiz yok. Butona basınca güncel context ile otomatik gönderilir.</p>
+            <p className="text-xs text-muted-foreground">No analysis yet. Click the button to send the latest context automatically.</p>
           )}
         </div>
       </div>
 
       {/* Activity */}
       <div className="glass-card p-4">
-        <h3 className="text-sm font-semibold text-foreground mb-3">Son Aktiviteler</h3>
+        <h3 className="text-sm font-semibold text-foreground mb-3">Recent Activities</h3>
         <div className="space-y-2">
           {latest30.map((event, i) => {
             const side = (event.side ?? '').toUpperCase();
@@ -707,9 +707,9 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                 </div>
                 <div className="text-right">
                   <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
-                    Price: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}Share: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}USD: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
+                    Price: {toNumber(event.price).toLocaleString('en-US', { maximumFractionDigits: 6 })} •
+                    {' '}Share: {toNumber(event.size).toLocaleString('en-US', { maximumFractionDigits: 6 })} •
+                    {' '}USD: {toNumber(event.value_usd).toLocaleString('en-US', { maximumFractionDigits: 6 })}
                   </p>
                   <p className="text-[10px] text-muted-foreground">{formatBerlin(event.seen_at_utc)}</p>
                 </div>
@@ -717,7 +717,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             );
           })}
           {latest30.length === 0 && (
-            <div className="py-4 text-sm text-muted-foreground text-center">Henüz takip verisi yok</div>
+            <div className="py-4 text-sm text-muted-foreground text-center">No tracking data yet</div>
           )}
         </div>
       </div>

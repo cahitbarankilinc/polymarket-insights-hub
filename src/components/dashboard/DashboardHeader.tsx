@@ -6,10 +6,10 @@ interface DashboardHeaderProps {
 }
 
 const tabs = [
-  { label: 'Adres Ekle', icon: '➕' },
-  { label: 'Takip Listesi', icon: '📡' },
+  { label: 'Add Address', icon: '➕' },
+  { label: 'Tracking List', icon: '📡' },
   { label: 'Paper Trade', icon: '📊' },
-  { label: 'Gerçek Trade', icon: '⚡' },
+  { label: 'Live Trading', icon: '⚡' },
 ];
 
 export default function DashboardHeader({ activeTab, onTabChange }: DashboardHeaderProps) {

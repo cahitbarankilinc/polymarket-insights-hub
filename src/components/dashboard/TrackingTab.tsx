@@ -68,7 +68,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         }));
         setEventsMap(Object.fromEntries(eventsPairs));
       } catch {
-        // local tracker dev server kapalı olabilir
+        // local tracker dev server may be offline
       }
     };
 
@@ -95,7 +95,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
       <aside className="w-48 shrink-0 hidden lg:block">
         <div className="glass-card p-4 sticky top-24">
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            <Filter className="w-3 h-3 inline mr-1" /> Kategoriler
+            <Filter className="w-3 h-3 inline mr-1" /> Categories
           </h3>
           <div className="space-y-1">
             <button
@@ -104,7 +104,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                 !selectedCategory ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
               }`}
             >
-              Tümü ({addresses.length})
+              All ({addresses.length})
             </button>
             {categories.map(cat => {
               const count = addresses.filter(a => a.category === cat).length;
@@ -135,7 +135,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               !selectedCategory ? 'bg-primary/15 text-primary border border-primary/30' : 'bg-secondary/50 text-muted-foreground border border-border/30'
             }`}
           >
-            Tümü
+            All
           </button>
           {categories.map(cat => (
             <button
@@ -156,7 +156,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Adres ara..."
+            placeholder="Search address..."
             className="w-full pl-10 pr-4 py-2.5 rounded-lg bg-secondary/30 border border-border/30 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 transition-all"
           />
         </div>
@@ -165,7 +165,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         <div className="space-y-2">
           {filtered.length === 0 && (
             <div className="glass-card p-8 text-center text-muted-foreground text-sm">
-              Henüz takip edilen adres yok
+              No tracked addresses yet
             </div>
           )}
           {filtered.map((addr) => (
@@ -186,17 +186,17 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   </div>
                   <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
                   <p className="text-[10px] text-muted-foreground/60 mt-1">
-                    Eklendi: {addr.addedAt.toLocaleDateString('tr-TR')}
+                    Added: {addr.addedAt.toLocaleDateString('en-US')}
                   </p>
                   {addr.note && (
                     <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">
-                      Not: {addr.note}
+                      Note: {addr.note}
                     </p>
                   )}
                   {trackerMap[addr.address.toLowerCase()] && (
                     <p className="text-[10px] text-emerald-400/90 mt-1">
-                      {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •
-                      {' '}Toplam event: {trackerMap[addr.address.toLowerCase()].eventCount}
+                      {trackerMap[addr.address.toLowerCase()].isActive ? 'Tracking active' : 'Tracking paused'} •
+                      {' '}Total events: {trackerMap[addr.address.toLowerCase()].eventCount}
                     </p>
                   )}
                   {eventsMap[addr.address.toLowerCase()]?.length ? (
@@ -214,7 +214,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                     onClick={(e) => {
                       e.stopPropagation();
                       navigator.clipboard.writeText(addr.address);
-                      toast.success('Adres kopyalandı');
+                      toast.success('Address copied');
                     }}
                     className="p-2 rounded-lg hover:bg-secondary/50 text-muted-foreground hover:text-foreground transition-all"
                   >
@@ -242,7 +242,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       e.stopPropagation();
                       removeAddress(addr.id);
                       stopWalletTracking(addr.address);
-                      toast.success('Adres silindi');
+                      toast.success('Address deleted');
                     }}
                     className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
                   >

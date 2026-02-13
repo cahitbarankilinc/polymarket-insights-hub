@@ -155,7 +155,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   const startPaperTrade = useCallback((addressId: string, input: StartPaperTradeInput) => {
     const addr = addresses.find(a => a.id === addressId);
-    if (!addr) return { ok: false, reason: 'Cüzdan bulunamadı' };
+    if (!addr) return { ok: false, reason: 'Wallet not found' };
 
     const spendUsd = Math.max(0, input.spendUsd);
 
@@ -166,7 +166,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         const spentToday = paperBudget.lastDailyReset === currentDay ? paperBudget.spentToday : 0;
         const remainingDaily = Math.max(0, paperBudget.amount - spentToday);
         if (spendUsd > remainingDaily) {
-          return { ok: false, reason: 'Günlük bütçe yetersiz' };
+          return { ok: false, reason: 'Insufficient daily budget' };
         }
         setPaperBudgetState(prev => {
           const baseSpent = prev.lastDailyReset === currentDay ? prev.spentToday : 0;
@@ -180,7 +180,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         });
       } else {
         if (spendUsd > paperBudget.remaining) {
-          return { ok: false, reason: 'Toplam bütçe yetersiz' };
+          return { ok: false, reason: 'Insufficient total budget' };
         }
         setPaperBudgetState(prev => ({
           ...prev,
