@@ -21,6 +21,7 @@ const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: st
   { value: 'proportional', label: 'Proportional to Free Balance', description: 'Boştaki bakiyeye göre oranla.' },
   { value: 'multiplier', label: 'Multiplier Mode', description: 'Onun trade tutarı × k.' },
   { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Her işlemde sabit USD.' },
+  { value: 'buy-wait', label: 'Al Bekle', description: 'Her markette ilk N alımı sabit USD ile kopyala.' },
 ];
 
 interface WalletModeConfig {
@@ -29,6 +30,7 @@ interface WalletModeConfig {
   leaderFreeBalance: string;
   multiplier: string;
   fixedAmount: string;
+  buyWaitLimit: string;
   fixedShares: string;
   sharePrice: string;
   strategy: string;
@@ -41,6 +43,7 @@ const defaultConfig: WalletModeConfig = {
   leaderFreeBalance: '1000',
   multiplier: '1',
   fixedAmount: '20',
+  buyWaitLimit: '2',
   fixedShares: '50',
   sharePrice: '1',
   strategy: 'Copy Trading',
@@ -133,7 +136,13 @@ interface TradeActivity {
 interface CopySessionState {
   status: 'idle' | 'running' | 'syncing';
   lastEventKey?: string;
+  marketBuyCounts?: Record<string, number>;
 }
+
+const resolveMarketKey = (event: WalletTrackerEvent): string | null => {
+  const market = typeof event.market === 'string' ? event.market.trim().toLowerCase() : '';
+  return market || null;
+};
 
 const TRACKER_POLL_MS = 7000;
 
@@ -425,6 +434,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       }
       case 'multiplier': return sourceTradeUsd * multiplier;
       case 'fixed-amount': return fixedAmount;
+      case 'buy-wait': return fixedAmount;
       case 'fixed-shares': return fixedShares * sharePrice;
       default: return sourceTradeUsd;
     }
@@ -485,10 +495,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
       const cfg = walletConfigs[addressId] || defaultConfig;
       let openedTrades = 0;
+      const nextMarketBuyCounts: Record<string, number> = { ...(session.marketBuyCounts || {}) };
 
       for (const event of freshEvents) {
         const eventSide = resolveEventSide(event);
         if (!eventSide) continue;
+
+        if (cfg.mode === 'buy-wait' && eventSide !== 'BUY') continue;
 
         const eventPrice = toPositiveNumber(event.price);
         const eventSize = toPositiveNumber(event.size);
@@ -505,6 +518,17 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         const tradeUsd = calculateTradeUsd(eventConfig);
         if (tradeUsd <= 0) continue;
 
+        if (eventConfig.mode === 'buy-wait') {
+          const buyLimit = Math.floor(parseFloat(eventConfig.buyWaitLimit) || 0);
+          if (buyLimit <= 0) continue;
+
+          const marketKey = resolveMarketKey(event);
+          if (!marketKey) continue;
+
+          const copiedCount = nextMarketBuyCounts[marketKey] || 0;
+          if (copiedCount >= buyLimit) continue;
+        }
+
         const shouldUseSourceShares = eventConfig.mode === 'notional';
 
         const result = startPaperTrade(addressId, {
@@ -517,7 +541,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           side: eventSide,
         });
 
-        if (result.ok) openedTrades += 1;
+        if (result.ok) {
+          openedTrades += 1;
+          if (eventConfig.mode === 'buy-wait') {
+            const marketKey = resolveMarketKey(event);
+            if (marketKey) {
+              nextMarketBuyCounts[marketKey] = (nextMarketBuyCounts[marketKey] || 0) + 1;
+            }
+          }
+        }
       }
 
       setCopySessions((prev) => ({
@@ -526,6 +558,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           ...prev[addressId],
           status: 'running',
           lastEventKey: latestEventKey,
+          marketBuyCounts: nextMarketBuyCounts,
         },
       }));
 
@@ -594,6 +627,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         [setupId]: {
           status: 'running',
           lastEventKey: latestEventKey,
+          marketBuyCounts: {},
         },
       }));
       setCopySessionErrors((prev) => ({ ...prev, [setupId]: null }));
@@ -732,6 +766,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     </div>
                     {currentConfig.mode === 'multiplier' && <input type="number" step="0.1" value={currentConfig.multiplier} onChange={(e) => setConfig({ multiplier: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Multiplier" />}
                     {currentConfig.mode === 'fixed-amount' && <input type="number" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Sabit USD" />}
+                    {currentConfig.mode === 'buy-wait' && (
+                      <>
+                        <input type="number" min="1" value={currentConfig.buyWaitLimit} onChange={(e) => setConfig({ buyWaitLimit: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Market başına alım adedi" />
+                        <input type="number" min="0" value={currentConfig.fixedAmount} onChange={(e) => setConfig({ fixedAmount: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Her alım için sabit USD" />
+                      </>
+                    )}
                     <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Strateji" />
                     <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig, resolveBudgetDraft()).toFixed(2)}</span></p>
                   </div>

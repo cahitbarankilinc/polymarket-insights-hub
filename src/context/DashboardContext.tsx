@@ -22,7 +22,8 @@ export type CopyMode =
   | 'proportional'
   | 'multiplier'
   | 'fixed-amount'
-  | 'fixed-shares';
+  | 'fixed-shares'
+  | 'buy-wait';
 
 export interface PaperTrade {
   id: string;
