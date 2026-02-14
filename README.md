@@ -98,3 +98,21 @@ npm run dev
 ```
 
 Sonra arayüzden `➕ Adres Ekle` tabında bir `0x...` adresi ekleyin; takip sonuçlarını `Takip Listesi` içinde görebilirsiniz.
+
+
+### Webhook (Alchemy) ayarı
+
+Alchemy webhook POST'larını alabilmek için uygulamanın internetten erişilebilen HTTPS bir base URL ile çalışması gerekir.
+
+- Webhook listeleme: `GET /api/tracker/webhooks`
+- Webhook oluşturma: `POST /api/tracker/webhooks`
+- Webhook trigger endpointi: `POST /api/tracker/webhook/:id`
+- Webhook config kontrolü: `GET /api/tracker/webhook-config`
+
+Ortam değişkeni:
+
+```sh
+PUBLIC_WEBHOOK_BASE_URL=https://your-public-domain.com
+```
+
+> Not: `localhost` veya `127.0.0.1` URL'leri Alchemy için internetten erişilebilir sayılmaz.
