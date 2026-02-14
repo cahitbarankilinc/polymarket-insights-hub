@@ -198,7 +198,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     };
 
     load();
-    const intervalId = setInterval(load, 8000);
+    const intervalId = setInterval(load, 1000);
     return () => {
       active = false;
       clearInterval(intervalId);
