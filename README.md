@@ -77,6 +77,8 @@ Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/c
 
 Bu proje artık `➕ Adres Ekle` tabından girilen **Ethereum wallet** adresleri için local takip başlatır.
 
+> Not: Tracker artık harici API'leri periyodik olarak poll etmez; wallet verileri yalnızca webhook tetiklendiğinde güncellenir.
+
 - Takip başlatma endpointi: `POST /api/tracker/start`
 - Takip listesi endpointi: `GET /api/tracker/list`
 - Wallet event endpointi: `GET /api/tracker/events/:address`
@@ -98,3 +100,21 @@ npm run dev
 ```
 
 Sonra arayüzden `➕ Adres Ekle` tabında bir `0x...` adresi ekleyin; takip sonuçlarını `Takip Listesi` içinde görebilirsiniz.
+
+
+### Webhook (Alchemy) ayarı
+
+Alchemy webhook POST'larını alabilmek için uygulamanın internetten erişilebilen HTTPS bir base URL ile çalışması gerekir.
+
+- Webhook listeleme: `GET /api/tracker/webhooks`
+- Webhook oluşturma: `POST /api/tracker/webhooks`
+- Webhook trigger endpointi: `POST /api/tracker/webhook/:id`
+- Webhook config kontrolü: `GET /api/tracker/webhook-config`
+
+Ortam değişkeni:
+
+```sh
+PUBLIC_WEBHOOK_BASE_URL=https://your-public-domain.com
+```
+
+> Not: `localhost` veya `127.0.0.1` URL'leri Alchemy için internetten erişilebilir sayılmaz.

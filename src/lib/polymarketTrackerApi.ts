@@ -12,6 +12,24 @@ export type WalletTrackerEvent = {
   raw_source: 'activity' | 'trades';
 };
 
+export type TrackerWebhook = {
+  id: string;
+  name?: string | null;
+  createdAt: string;
+  walletCount: number;
+  walletAddresses?: string[];
+  publicUrl?: string | null;
+  localUrl?: string | null;
+  url: string;
+  isPublicReachable?: boolean;
+};
+
+export type TrackerWebhookConfig = {
+  publicBaseUrl?: string | null;
+  isPublicReachable: boolean;
+  help?: string;
+};
+
 export type WalletTrackerInfo = {
   address: string;
   eventCount: number;
@@ -19,6 +37,8 @@ export type WalletTrackerInfo = {
   lastCheck: string | null;
   isActive: boolean;
   storagePath: string;
+  webhookId?: string | null;
+  webhookName?: string | null;
 };
 
 export type WalletTrackerStats = {
@@ -65,11 +85,46 @@ export async function resolvePolymarketProfile(profileUrl: string): Promise<Poly
   return response.json() as Promise<PolymarketProfileResponse>;
 }
 
-export async function startWalletTracking(address: string) {
+export async function getTrackerWebhookConfig(): Promise<TrackerWebhookConfig> {
+  const response = await fetch('/api/tracker/webhook-config');
+  if (!response.ok) {
+    throw new Error('Webhook config okunamadı');
+  }
+
+  return response.json() as Promise<TrackerWebhookConfig>;
+}
+
+export async function listTrackerWebhooks(): Promise<TrackerWebhook[]> {
+  const response = await fetch('/api/tracker/webhooks');
+  if (!response.ok) {
+    throw new Error('Webhook listesi alınamadı');
+  }
+
+  const payload = await response.json() as { webhooks?: TrackerWebhook[] };
+  return Array.isArray(payload.webhooks) ? payload.webhooks : [];
+}
+
+export async function createTrackerWebhook(name?: string): Promise<TrackerWebhook> {
+  const response = await fetch('/api/tracker/webhooks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Webhook oluşturulamadı');
+  }
+
+  const payload = await response.json() as { webhook: TrackerWebhook };
+  return payload.webhook;
+}
+
+export async function startWalletTracking(address: string, webhookId?: string | null) {
   const response = await fetch('/api/tracker/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ address, webhookId }),
   });
   if (!response.ok) {
     const text = await response.text();
