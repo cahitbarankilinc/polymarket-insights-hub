@@ -11,9 +11,10 @@ const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
+const WEBHOOKS_FILE = path.join(TRACKING_ROOT, "webhooks.json");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
 Asla:
 - Tavsiye verme, öneri verme, “yapmalısın / dene / test et / paper trading” gibi yönlendirici cümleler kurma.
@@ -29,7 +30,7 @@ Asla:
 
 2) Net öneri (özet)
 - Sadece 3–5 madde.
-- “Ölçekleme yaklaşımı”nı tarafsız biçimde seç ve yaz: 
+- “Ölçekleme yaklaşımı”nı tarafsız biçimde seç ve yaz:
   - “Sabit $”, “Portföy %”, veya “Free balance oranı” (veri varsa).
 - Kullanıcının bütçesi (~$100) ile trader’ın ölçeği çok farklıysa bunu 1 cümleyle belirt.
 - Her maddede yalnızca net parametre/ilke adı ver (örn: “Sabit $/trade: $X”, “Max açık maruziyet: $Y”, “Günlük toplam: $Z”).
@@ -69,9 +70,20 @@ type TrackerState = {
 type TrackerRuntime = {
   timer: NodeJS.Timeout;
   state: TrackerState;
+  tick: () => Promise<void>;
+};
+
+type StoredWebhook = {
+  id: string;
+  label: string;
+  callbackPath: string;
+  publicUrl: string;
+  createdAt: string;
+  wallets: string[];
 };
 
 const runtimes = new Map<string, TrackerRuntime>();
+let webhookInitPromise: Promise<void> | null = null;
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -89,26 +101,21 @@ const normalizeWallet = (address: string) => address.trim().toLowerCase();
 
 const toTimestampMs = (value: unknown): number | null => {
   if (value === null || value === undefined) return null;
-
   if (typeof value === "number") {
     if (!Number.isFinite(value)) return null;
     return value > 1e12 ? value : value * 1000;
   }
-
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return null;
-
     if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
       const numeric = Number(trimmed);
       if (!Number.isFinite(numeric)) return null;
       return numeric > 1e12 ? numeric : numeric * 1000;
     }
-
     const parsed = new Date(trimmed).getTime();
     return Number.isNaN(parsed) ? null : parsed;
   }
-
   return null;
 };
 
@@ -160,15 +167,13 @@ const readEvents = (address: string): NormalizedEvent[] => {
 const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
   const now = Date.now();
   const last24HoursMs = 24 * 60 * 60 * 1000;
-
   let last24h = 0;
   let buyTodayUsd = 0;
   let sellTodayUsd = 0;
 
   for (const event of events) {
-    const eventTime = toTimestampMs(event.event_time) ?? toTimestampMs(event.seen_at_utc);
-    if (eventTime === null || now - eventTime > last24HoursMs) continue;
-
+    const ts = toTimestampMs(event.event_time ?? event.seen_at_utc);
+    if (ts === null || now - ts > last24HoursMs) continue;
     last24h += 1;
     const value = event.value_usd ?? 0;
     const side = (event.side ?? "").toUpperCase();
@@ -176,12 +181,7 @@ const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
     if (side === "SELL") sellTodayUsd += value;
   }
 
-  return {
-    total: events.length,
-    last24h,
-    buyTodayUsd,
-    sellTodayUsd,
-  };
+  return { total: events.length, last24h, buyTodayUsd, sellTodayUsd };
 };
 
 const writeEvents = (address: string, events: NormalizedEvent[]) => {
@@ -207,7 +207,6 @@ const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): Normalize
   const price = toFloat(raw.price ?? raw.avgPrice);
   const size = toFloat(raw.size ?? raw.amount ?? raw.shares);
   const valueFromEvent = toFloat(raw.value ?? raw.valueUSD);
-
   const normalizedEventTime = toTimestampMs(raw.timestamp ?? raw.createdAt ?? raw.time ?? raw.eventTime);
 
   return {
@@ -225,12 +224,70 @@ const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): Normalize
   };
 };
 
+const readWebhooks = (): StoredWebhook[] => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WEBHOOKS_FILE, "utf-8")) as { webhooks?: StoredWebhook[] };
+    return Array.isArray(parsed.webhooks) ? parsed.webhooks : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeWebhooks = (webhooks: StoredWebhook[]) => {
+  fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify({ webhooks }, null, 2), "utf-8");
+};
+
+const ensureWebhook = async (id = "alchemy-default") => {
+  const existing = readWebhooks();
+  if (existing.some((item) => item.id === id)) return;
+
+  const callbackPath = `/api/tracker/webhooks/${id}/callback`;
+  const fallbackBaseUrl = process.env.PUBLIC_WEBHOOK_BASE_URL?.trim();
+  const sanitizedBase = fallbackBaseUrl?.replace(/\/$/, "") ?? "";
+  const publicUrl = sanitizedBase ? `${sanitizedBase}${callbackPath}` : `http://localhost:8080${callbackPath}`;
+
+  writeWebhooks([
+    ...existing,
+    {
+      id,
+      label: "Alchemy Auto Webhook",
+      callbackPath,
+      publicUrl,
+      createdAt: utcNowIso(),
+      wallets: [],
+    },
+  ]);
+};
+
+const ensureWebhookInit = async () => {
+  if (webhookInitPromise) return webhookInitPromise;
+  webhookInitPromise = ensureWebhook();
+  return webhookInitPromise;
+};
+
+const bindWalletToWebhook = (webhookId: string, address: string) => {
+  const normalized = normalizeWallet(address);
+  const webhooks = readWebhooks();
+  const updated = webhooks.map((webhook) => {
+    if (webhook.id !== webhookId) return webhook;
+    const wallets = webhook.wallets.includes(normalized) ? webhook.wallets : [...webhook.wallets, normalized];
+    return { ...webhook, wallets };
+  });
+  writeWebhooks(updated);
+};
+
+const unbindWalletFromWebhooks = (address: string) => {
+  const normalized = normalizeWallet(address);
+  const webhooks = readWebhooks().map((webhook) => ({
+    ...webhook,
+    wallets: webhook.wallets.filter((wallet) => wallet !== normalized),
+  }));
+  writeWebhooks(webhooks);
+};
 
 const resolveProfileFromUrl = (profileUrl: string) => {
   const safeUrl = profileUrl.trim();
-  if (!safeUrl) {
-    throw new Error("profileUrl is required");
-  }
+  if (!safeUrl) throw new Error("profileUrl is required");
 
   const candidates = ["python3", "python"] as const;
   let lastError = "Python command failed";
@@ -241,22 +298,17 @@ const resolveProfileFromUrl = (profileUrl: string) => {
       lastError = result.error.message;
       continue;
     }
-
     if (result.status !== 0) {
       lastError = (result.stderr || result.stdout || `${bin} exited with ${result.status}`).trim();
       continue;
     }
 
     const output = result.stdout.trim();
-    if (!output) {
-      throw new Error("Profil scripti boş cevap döndü");
-    }
+    if (!output) throw new Error("Profil scripti boş cevap döndü");
 
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const proxyWallet = typeof parsed.proxyWallet === "string" ? normalizeWallet(parsed.proxyWallet) : "";
-    if (!proxyWallet) {
-      throw new Error("Profil çıktısında proxyWallet bulunamadı");
-    }
+    if (!proxyWallet) throw new Error("Profil çıktısında proxyWallet bulunamadı");
 
     return { ...parsed, proxyWallet };
   }
@@ -266,9 +318,7 @@ const resolveProfileFromUrl = (profileUrl: string) => {
 
 const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> => {
   const response = await fetch(`${url}?user=${address}&limit=50&offset=0`);
-  if (!response.ok) {
-    throw new Error(`${url} -> HTTP ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`${url} -> HTTP ${response.status}`);
   const payload = await response.json();
   if (Array.isArray(payload)) return payload as RawEvent[];
   if (payload && typeof payload === "object") {
@@ -283,8 +333,10 @@ const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> 
 
 const startTracker = (address: string) => {
   const normalizedAddress = normalizeWallet(address);
-  if (!normalizedAddress) return;
-  if (runtimes.has(normalizedAddress)) return;
+  if (!normalizedAddress) return null;
+
+  const existing = runtimes.get(normalizedAddress);
+  if (existing) return existing;
 
   ensureWalletDir(normalizedAddress);
   const state = readState(normalizedAddress);
@@ -301,10 +353,7 @@ const startTracker = (address: string) => {
       ]);
 
       const newEvents: NormalizedEvent[] = [];
-      for (const [payload, source] of [
-        [activity, "activity" as const],
-        [trades, "trades" as const],
-      ]) {
+      for (const [payload, source] of [[activity, "activity" as const], [trades, "trades" as const]]) {
         for (const item of payload) {
           const eventId = generateEventId(item, source);
           if (seenIds.has(eventId)) continue;
@@ -331,9 +380,19 @@ const startTracker = (address: string) => {
     }
   };
 
-  tick();
-  const timer = setInterval(tick, POLL_INTERVAL_MS);
-  runtimes.set(normalizedAddress, { timer, state });
+  void tick();
+  const timer = setInterval(() => {
+    void tick();
+  }, POLL_INTERVAL_MS);
+  const runtime = { timer, state, tick };
+  runtimes.set(normalizedAddress, runtime);
+  return runtime;
+};
+
+const refreshWallet = async (address: string) => {
+  const runtime = startTracker(address);
+  if (!runtime) return;
+  await runtime.tick();
 };
 
 const stopTracker = (address: string) => {
@@ -344,7 +403,6 @@ const stopTracker = (address: string) => {
   runtimes.delete(normalizedAddress);
 };
 
-
 const readJsonBody = async <T>(req: IncomingMessage): Promise<T> => {
   let rawBody = "";
   await new Promise<void>((resolve) => {
@@ -353,33 +411,25 @@ const readJsonBody = async <T>(req: IncomingMessage): Promise<T> => {
     });
     req.on("end", () => resolve());
   });
-
   return rawBody ? (JSON.parse(rawBody) as T) : ({} as T);
 };
 
 const extractResponseText = (payload: Record<string, unknown>): string => {
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text;
-  }
-
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
   if (Array.isArray(payload.output)) {
     const textChunks: string[] = [];
-
     for (const item of payload.output) {
       if (!item || typeof item !== "object") continue;
       const content = (item as { content?: unknown }).content;
       if (!Array.isArray(content)) continue;
-
       for (const part of content) {
         if (!part || typeof part !== "object") continue;
         const maybeText = (part as { text?: unknown }).text;
         if (typeof maybeText === "string") textChunks.push(maybeText);
       }
     }
-
     if (textChunks.length > 0) return textChunks.join("\n").trim();
   }
-
   return "Model boş yanıt döndürdü.";
 };
 
@@ -387,6 +437,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
   name: "polymarket-local-tracker",
   configureServer(server) {
     fs.mkdirSync(TRACKING_ROOT, { recursive: true });
+    void ensureWebhookInit();
 
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith("/api/tracker")) {
@@ -401,6 +452,8 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
       };
 
       try {
+        await ensureWebhookInit();
+
         if (req.method === "POST" && req.url === "/api/tracker/profile") {
           const parsed = await readJsonBody<{ profileUrl?: string }>(req);
           const profileData = resolveProfileFromUrl(parsed.profileUrl ?? "");
@@ -408,16 +461,27 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           return;
         }
 
+        if (req.method === "GET" && req.url === "/api/tracker/webhooks") {
+          const webhooks = readWebhooks().map((webhook) => ({
+            ...webhook,
+            walletCount: webhook.wallets.length,
+          }));
+          sendJson(200, { webhooks });
+          return;
+        }
+
         if (req.method === "POST" && req.url === "/api/tracker/start") {
-          const parsed = await readJsonBody<{ address?: string }>(req);
+          const parsed = await readJsonBody<{ address?: string; webhookId?: string }>(req);
           const address = normalizeWallet(parsed.address ?? "");
           if (!address) {
             sendJson(400, { error: "address is required" });
             return;
           }
 
+          const webhookId = parsed.webhookId ?? "alchemy-default";
+          bindWalletToWebhook(webhookId, address);
           startTracker(address);
-          sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          sendJson(200, { ok: true, address, webhookId, storagePath: walletDir(address) });
           return;
         }
 
@@ -442,6 +506,20 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           return;
         }
 
+        if (req.method === "POST" && req.url?.startsWith("/api/tracker/webhooks/") && req.url.endsWith("/callback")) {
+          const webhookId = req.url.replace("/api/tracker/webhooks/", "").replace("/callback", "").split("?")[0];
+          const payload = await readJsonBody<Record<string, unknown>>(req);
+          const webhook = readWebhooks().find((item) => item.id === webhookId);
+          if (!webhook) {
+            sendJson(404, { error: "Webhook bulunamadı" });
+            return;
+          }
+
+          await Promise.all(webhook.wallets.map((address) => refreshWallet(address)));
+          sendJson(200, { ok: true, webhookId, updatedWallets: webhook.wallets.length, received: payload });
+          return;
+        }
+
         if (req.method === "GET" && req.url?.startsWith("/api/tracker/events/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/events/", "").split("?")[0]);
           const events = readEvents(address);
@@ -458,13 +536,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
             return;
           }
 
-          const userPrompt = `Bütçem yaklaşık $100.
-
-Aşağıdaki veri bir Polymarket kullanıcısının trade/aktivite geçmişidir. 
-Bu trader’ı kopyalamayı planlıyorum. Sadece istenen formatta, kısa çıktı üret.
-
-VERİLER:
-${context}`;
+          const userPrompt = `Bütçem yaklaşık $100.\n\nAşağıdaki veri bir Polymarket kullanıcısının trade/aktivite geçmişidir. \nBu trader’ı kopyalamayı planlıyorum. Sadece istenen formatta, kısa çıktı üret.\n\nVERİLER:\n${context}`;
 
           const openAiResponse = await fetch("https://api.openai.com/v1/responses", {
             method: "POST",
@@ -485,10 +557,10 @@ ${context}`;
             return;
           }
 
-          const payload = await openAiResponse.json() as Record<string, unknown>;
+          const responsePayload = await openAiResponse.json() as Record<string, unknown>;
           sendJson(200, {
             model: OPENAI_MODEL,
-            analysis: extractResponseText(payload),
+            analysis: extractResponseText(responsePayload),
           });
           return;
         }
@@ -496,6 +568,7 @@ ${context}`;
         if (req.method === "DELETE" && req.url?.startsWith("/api/tracker/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/", "").split("?")[0]);
           stopTracker(address);
+          unbindWalletFromWebhooks(address);
           sendJson(200, { ok: true, address });
           return;
         }
@@ -508,14 +581,11 @@ ${context}`;
   },
 });
 
-// https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
-    hmr: {
-      overlay: false,
-    },
+    hmr: { overlay: false },
   },
   plugins: [react(), createPolymarketTrackerPlugin(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

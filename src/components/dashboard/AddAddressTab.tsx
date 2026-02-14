@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Link as LinkIcon, Tag, Check } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
-import { resolvePolymarketProfile, startWalletTracking } from '@/lib/polymarketTrackerApi';
+import { listTrackerWebhooks, resolvePolymarketProfile, startWalletTracking, type TrackerWebhook } from '@/lib/polymarketTrackerApi';
 
 export default function AddAddressTab() {
   const { categories, addAddress, addCategory } = useDashboard();
@@ -12,6 +12,24 @@ export default function AddAddressTab() {
   const [note, setNote] = useState('');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [webhooks, setWebhooks] = useState<TrackerWebhook[]>([]);
+  const [selectedWebhookId, setSelectedWebhookId] = useState('');
+
+  useEffect(() => {
+    const loadWebhooks = async () => {
+      try {
+        const items = await listTrackerWebhooks();
+        setWebhooks(items);
+        if (items[0]) {
+          setSelectedWebhookId(items[0].id);
+        }
+      } catch {
+        toast.error('Webhook listesi yüklenemedi');
+      }
+    };
+
+    void loadWebhooks();
+  }, []);
 
   const isProbablyUrl = (value: string) => /^https?:\/\/.+/i.test(value.trim());
 
@@ -58,7 +76,7 @@ export default function AddAddressTab() {
       });
 
       try {
-        await startWalletTracking(normalizedAddress);
+        await startWalletTracking(normalizedAddress, selectedWebhookId || undefined);
       } catch {
         toast.error('Adres eklendi ama local takip başlatılamadı');
       }
@@ -153,6 +171,27 @@ export default function AddAddressTab() {
               className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-accent/30 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30 text-sm transition-all animate-fade-in"
             />
           )}
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+            Webhook Seçimi <span className="text-destructive">*</span>
+          </label>
+          <select
+            value={selectedWebhookId}
+            onChange={(e) => setSelectedWebhookId(e.target.value)}
+            className="w-full px-4 py-3 rounded-lg bg-secondary/50 border border-border/50 text-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 text-sm transition-all"
+          >
+            {webhooks.length === 0 && <option value="">Webhook yükleniyor...</option>}
+            {webhooks.map((webhook) => (
+              <option key={webhook.id} value={webhook.id}>
+                {`${webhook.label} (${webhook.walletCount} wallet) - ${webhook.publicUrl}`}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Alchemy webhook URL: {webhooks.find((item) => item.id === selectedWebhookId)?.publicUrl ?? '-'}
+          </p>
         </div>
 
         <div className="space-y-2">

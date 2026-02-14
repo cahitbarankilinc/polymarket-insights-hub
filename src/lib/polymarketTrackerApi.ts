@@ -21,6 +21,15 @@ export type WalletTrackerInfo = {
   storagePath: string;
 };
 
+export type TrackerWebhook = {
+  id: string;
+  label: string;
+  publicUrl: string;
+  callbackPath: string;
+  walletCount: number;
+  createdAt: string;
+};
+
 export type WalletTrackerStats = {
   total: number;
   last24h: number;
@@ -65,17 +74,27 @@ export async function resolvePolymarketProfile(profileUrl: string): Promise<Poly
   return response.json() as Promise<PolymarketProfileResponse>;
 }
 
-export async function startWalletTracking(address: string) {
+export async function startWalletTracking(address: string, webhookId?: string) {
   const response = await fetch('/api/tracker/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ address, webhookId }),
   });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || 'Takip başlatılamadı');
   }
   return response.json();
+}
+
+export async function listTrackerWebhooks(): Promise<TrackerWebhook[]> {
+  const response = await fetch('/api/tracker/webhooks');
+  if (!response.ok) {
+    throw new Error('Webhook listesi okunamadı');
+  }
+
+  const data = await response.json() as { webhooks: TrackerWebhook[] };
+  return Array.isArray(data.webhooks) ? data.webhooks : [];
 }
 
 export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
