@@ -6,7 +6,7 @@ import { spawnSync, spawn, type ChildProcessWithoutNullStreams } from "child_pro
 import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 1000;
 const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";

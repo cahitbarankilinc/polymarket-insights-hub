@@ -73,7 +73,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
     };
 
     syncTracking();
-    const id = setInterval(syncTracking, 5000);
+    const id = setInterval(syncTracking, 1000);
     return () => clearInterval(id);
   }, [addresses]);
 
