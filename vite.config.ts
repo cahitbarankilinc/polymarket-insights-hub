@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import fs from "fs";
-import { spawnSync } from "child_process";
+import { spawnSync, spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
@@ -12,6 +12,11 @@ const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
+const WEBHOOKS_FILE = path.resolve(TRACKING_ROOT, "webhooks.json");
+const DEFAULT_WEBHOOK_ID = "alchemy-default";
+const CALLBACK_PATH = "/api/tracker/webhooks/alchemy-default/callback";
+const ALCHEMY_NETWORK = (process.env.ALCHEMY_NETWORK ?? "eth-mainnet").toLowerCase();
+const ALCHEMY_WEBHOOK_API_URL = process.env.ALCHEMY_WEBHOOK_API_URL ?? "https://dashboard.alchemy.com/api/create-webhook";
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
@@ -69,9 +74,27 @@ type TrackerState = {
 type TrackerRuntime = {
   timer: NodeJS.Timeout;
   state: TrackerState;
+  tick: () => Promise<void>;
+};
+
+type WebhookConfig = {
+  id: string;
+  label: string;
+  callbackPath: string;
+  callbackUrl: string | null;
+  publicBaseUrl: string | null;
+  provider: "alchemy" | "custom";
+  alchemyWebhookId?: string;
+  status: "active" | "degraded";
+  warning?: string;
+  walletAddresses: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 const runtimes = new Map<string, TrackerRuntime>();
+let tunnelProcess: ChildProcessWithoutNullStreams | null = null;
+let tunnelUrl: string | null = null;
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -155,6 +178,124 @@ const readEvents = (address: string): NormalizedEvent[] => {
   } catch {
     return [];
   }
+};
+
+const readWebhookConfigs = (): WebhookConfig[] => {
+  try {
+    const raw = fs.readFileSync(WEBHOOKS_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is WebhookConfig => Boolean(item && typeof item === "object"));
+  } catch {
+    return [];
+  }
+};
+
+const writeWebhookConfigs = (configs: WebhookConfig[]) => {
+  fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(configs, null, 2), "utf-8");
+};
+
+
+const startTunnel = async (): Promise<string> => {
+  if (tunnelUrl) return tunnelUrl;
+
+  tunnelProcess = spawn("ssh", ["-o", "StrictHostKeyChecking=no", "-R", "80:localhost:8080", "nokey@localhost.run"]);
+
+  return await new Promise<string>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error("Tunnel URL alınamadı"));
+    }, 20000);
+
+    const handleOutput = (chunk: Buffer) => {
+      const text = chunk.toString();
+      const match = text.match(/https:\/\/[\w.-]+\.lhr\.life/);
+      if (!match) return;
+      tunnelUrl = match[0];
+      clearTimeout(timeoutId);
+      resolve(tunnelUrl);
+    };
+
+    tunnelProcess?.stdout.on("data", handleOutput);
+    tunnelProcess?.stderr.on("data", handleOutput);
+    tunnelProcess?.on("error", (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+    tunnelProcess?.on("close", () => {
+      tunnelProcess = null;
+      tunnelUrl = null;
+    });
+  });
+};
+
+const upsertDefaultWebhook = async (): Promise<WebhookConfig> => {
+  const existing = readWebhookConfigs();
+  const now = utcNowIso();
+  const baseUrl = await startTunnel();
+  const callbackUrl = `${baseUrl}${CALLBACK_PATH}`;
+  const next: WebhookConfig = existing.find((hook) => hook.id === DEFAULT_WEBHOOK_ID) ?? {
+    id: DEFAULT_WEBHOOK_ID,
+    label: "Alchemy Default",
+    callbackPath: CALLBACK_PATH,
+    callbackUrl,
+    publicBaseUrl: baseUrl,
+    provider: "alchemy",
+    status: "degraded",
+    walletAddresses: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  next.callbackUrl = callbackUrl;
+  next.publicBaseUrl = baseUrl;
+  next.updatedAt = now;
+
+  const apiKey = process.env.ALCHEMY_API_KEY;
+  const authToken = process.env.ALCHEMY_AUTH_TOKEN;
+
+  if (apiKey && authToken) {
+    try {
+      const response = await fetch(ALCHEMY_WEBHOOK_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+          "X-Alchemy-Token": authToken,
+        },
+        body: JSON.stringify({
+          webhook_type: "ADDRESS_ACTIVITY",
+          network: ALCHEMY_NETWORK,
+          webhook_url: callbackUrl,
+          addresses: next.walletAddresses,
+          webhook_id: next.alchemyWebhookId,
+          app_id: apiKey,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Alchemy webhook HTTP ${response.status}`);
+      }
+
+      const payload = await response.json() as Record<string, unknown>;
+      const resolvedId = payload.id ?? payload.webhook_id;
+      if (typeof resolvedId === "string" && resolvedId.trim()) {
+        next.alchemyWebhookId = resolvedId;
+      }
+
+      next.status = "active";
+      next.warning = undefined;
+    } catch (error) {
+      next.status = "degraded";
+      next.warning = error instanceof Error ? error.message : "Alchemy webhook kurulamadı";
+    }
+  } else {
+    next.status = "degraded";
+    next.warning = "ALCHEMY_API_KEY veya ALCHEMY_AUTH_TOKEN eksik";
+  }
+
+  const withoutDefault = existing.filter((hook) => hook.id !== DEFAULT_WEBHOOK_ID);
+  writeWebhookConfigs([...withoutDefault, next]);
+  return next;
 };
 
 const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
@@ -333,7 +474,16 @@ const startTracker = (address: string) => {
 
   tick();
   const timer = setInterval(tick, POLL_INTERVAL_MS);
-  runtimes.set(normalizedAddress, { timer, state });
+  runtimes.set(normalizedAddress, { timer, state, tick });
+};
+
+const refreshWalletNow = async (address: string) => {
+  const normalizedAddress = normalizeWallet(address);
+  if (!normalizedAddress) return;
+  startTracker(normalizedAddress);
+  const runtime = runtimes.get(normalizedAddress);
+  if (!runtime) return;
+  await runtime.tick();
 };
 
 const stopTracker = (address: string) => {
@@ -387,6 +537,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
   name: "polymarket-local-tracker",
   configureServer(server) {
     fs.mkdirSync(TRACKING_ROOT, { recursive: true });
+    void upsertDefaultWebhook();
 
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith("/api/tracker")) {
@@ -409,7 +560,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
         }
 
         if (req.method === "POST" && req.url === "/api/tracker/start") {
-          const parsed = await readJsonBody<{ address?: string }>(req);
+          const parsed = await readJsonBody<{ address?: string; webhookId?: string }>(req);
           const address = normalizeWallet(parsed.address ?? "");
           if (!address) {
             sendJson(400, { error: "address is required" });
@@ -417,7 +568,35 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           }
 
           startTracker(address);
+
+          const webhookId = (parsed.webhookId ?? DEFAULT_WEBHOOK_ID).trim() || DEFAULT_WEBHOOK_ID;
+          const configs = readWebhookConfigs();
+          const selected = configs.find((item) => item.id === webhookId);
+          if (selected) {
+            const walletSet = new Set(selected.walletAddresses.map((item) => normalizeWallet(item)));
+            walletSet.add(address);
+            selected.walletAddresses = [...walletSet];
+            selected.updatedAt = utcNowIso();
+            writeWebhookConfigs(configs);
+            if (selected.id === DEFAULT_WEBHOOK_ID) {
+              await upsertDefaultWebhook();
+            }
+          }
+
           sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          return;
+        }
+
+        if (req.method === "GET" && req.url === "/api/tracker/webhooks") {
+          const hooks = await upsertDefaultWebhook();
+          const configs = readWebhookConfigs().map((hook) => ({
+            ...hook,
+            walletCount: hook.walletAddresses.length,
+          }));
+          sendJson(200, {
+            webhooks: configs,
+            defaultWebhookId: hooks.id,
+          });
           return;
         }
 
@@ -493,9 +672,37 @@ ${context}`;
           return;
         }
 
+        if (req.method === "POST" && req.url === CALLBACK_PATH) {
+          const payload = await readJsonBody<Record<string, unknown>>(req);
+          const webhookId = typeof payload.webhookId === "string" ? payload.webhookId : DEFAULT_WEBHOOK_ID;
+          const configs = readWebhookConfigs();
+          const selected = configs.find((item) => item.id === webhookId);
+
+          if (!selected) {
+            sendJson(404, { error: "Webhook bulunamadı" });
+            return;
+          }
+
+          await Promise.all(selected.walletAddresses.map((address) => refreshWalletNow(address)));
+
+          sendJson(200, {
+            ok: true,
+            webhookId: selected.id,
+            refreshedWallets: selected.walletAddresses,
+          });
+          return;
+        }
+
         if (req.method === "DELETE" && req.url?.startsWith("/api/tracker/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/", "").split("?")[0]);
           stopTracker(address);
+          const configs = readWebhookConfigs();
+          for (const hook of configs) {
+            hook.walletAddresses = hook.walletAddresses.filter((wallet) => normalizeWallet(wallet) !== address);
+            hook.updatedAt = utcNowIso();
+          }
+          writeWebhookConfigs(configs);
+          await upsertDefaultWebhook();
           sendJson(200, { ok: true, address });
           return;
         }
