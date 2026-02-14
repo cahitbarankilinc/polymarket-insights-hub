@@ -194,10 +194,17 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                     </p>
                   )}
                   {trackerMap[addr.address.toLowerCase()] && (
-                    <p className="text-[10px] text-emerald-400/90 mt-1">
-                      {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •
-                      {' '}Toplam event: {trackerMap[addr.address.toLowerCase()].eventCount}
-                    </p>
+                    <>
+                      <p className="text-[10px] text-emerald-400/90 mt-1">
+                        {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •
+                        {' '}Toplam event: {trackerMap[addr.address.toLowerCase()].eventCount}
+                      </p>
+                      {trackerMap[addr.address.toLowerCase()].webhookId && (
+                        <p className="text-[10px] text-primary/80 mt-0.5">
+                          Webhook: {trackerMap[addr.address.toLowerCase()].webhookName || trackerMap[addr.address.toLowerCase()].webhookId}
+                        </p>
+                      )}
+                    </>
                   )}
                   {eventsMap[addr.address.toLowerCase()]?.length ? (
                     <div className="mt-2 space-y-1">

@@ -6,11 +6,12 @@ import { spawnSync } from "child_process";
 import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 7000;
 const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
+const WEBHOOKS_FILE = path.join(TRACKING_ROOT, "webhooks.json");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
@@ -69,6 +70,17 @@ type TrackerState = {
 type TrackerRuntime = {
   timer: NodeJS.Timeout;
   state: TrackerState;
+};
+
+type TrackerWebhook = {
+  id: string;
+  name?: string;
+  createdAt: string;
+  walletAddresses: string[];
+};
+
+type TrackerWebhooksState = {
+  webhooks: TrackerWebhook[];
 };
 
 const runtimes = new Map<string, TrackerRuntime>();
@@ -193,6 +205,52 @@ const appendError = (address: string, message: string) => {
   fs.appendFileSync(errorsFile(address), `[${utcNowIso()}] ${message}\n`, "utf-8");
 };
 
+const createWebhookId = () => `wh_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+const readWebhooksState = (): TrackerWebhooksState => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WEBHOOKS_FILE, "utf-8")) as Partial<TrackerWebhooksState>;
+    const webhooks = Array.isArray(parsed.webhooks) ? parsed.webhooks : [];
+    return {
+      webhooks: webhooks
+        .filter((hook) => hook && typeof hook === "object")
+        .map((hook) => {
+          const record = hook as Partial<TrackerWebhook>;
+          return {
+            id: typeof record.id === "string" ? record.id : createWebhookId(),
+            name: typeof record.name === "string" ? record.name : undefined,
+            createdAt: typeof record.createdAt === "string" ? record.createdAt : utcNowIso(),
+            walletAddresses: Array.isArray(record.walletAddresses)
+              ? record.walletAddresses.map((address) => normalizeWallet(String(address))).filter(Boolean)
+              : [],
+          };
+        }),
+    };
+  } catch {
+    return { webhooks: [] };
+  }
+};
+
+const writeWebhooksState = (state: TrackerWebhooksState) => {
+  fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(state, null, 2), "utf-8");
+};
+
+const ensureDefaultWebhook = () => {
+  const state = readWebhooksState();
+  if (state.webhooks.length > 0) {
+    return state.webhooks[0];
+  }
+
+  const webhook: TrackerWebhook = {
+    id: createWebhookId(),
+    name: "Varsayılan Webhook",
+    createdAt: utcNowIso(),
+    walletAddresses: [],
+  };
+  writeWebhooksState({ webhooks: [webhook] });
+  return webhook;
+};
+
 const generateEventId = (raw: RawEvent, source: "activity" | "trades") => {
   const txHash = raw.transactionHash ?? raw.txHash ?? raw.hash;
   if (txHash) return String(txHash);
@@ -281,6 +339,45 @@ const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> 
   return [];
 };
 
+const syncWalletEvents = async (address: string, state: TrackerState) => {
+  const normalizedAddress = normalizeWallet(address);
+  const allEvents = readEvents(normalizedAddress);
+  const seenIds = new Set(state.seen_ids);
+  const seenQueue = [...state.seen_queue];
+
+  const [activity, trades] = await Promise.all([
+    fetchEndpoint(ACTIVITY_URL, normalizedAddress),
+    fetchEndpoint(TRADES_URL, normalizedAddress),
+  ]);
+
+  const newEvents: NormalizedEvent[] = [];
+  for (const [payload, source] of [
+    [activity, "activity" as const],
+    [trades, "trades" as const],
+  ]) {
+    for (const item of payload) {
+      const eventId = generateEventId(item, source);
+      if (seenIds.has(eventId)) continue;
+      seenIds.add(eventId);
+      seenQueue.push(eventId);
+      while (seenQueue.length > MAX_EVENTS) {
+        const oldest = seenQueue.shift();
+        if (oldest) seenIds.delete(oldest);
+      }
+      newEvents.push(normalizeEvent(item, source));
+    }
+  }
+
+  if (newEvents.length > 0) {
+    writeEvents(normalizedAddress, [...newEvents.reverse(), ...allEvents].slice(0, MAX_EVENTS));
+  }
+
+  state.seen_ids = [...seenIds];
+  state.seen_queue = seenQueue;
+  state.last_check = utcNowIso();
+  writeState(normalizedAddress, state);
+};
+
 const startTracker = (address: string) => {
   const normalizedAddress = normalizeWallet(address);
   if (!normalizedAddress) return;
@@ -290,42 +387,8 @@ const startTracker = (address: string) => {
   const state = readState(normalizedAddress);
 
   const tick = async () => {
-    const allEvents = readEvents(normalizedAddress);
-    const seenIds = new Set(state.seen_ids);
-    const seenQueue = [...state.seen_queue];
-
     try {
-      const [activity, trades] = await Promise.all([
-        fetchEndpoint(ACTIVITY_URL, normalizedAddress),
-        fetchEndpoint(TRADES_URL, normalizedAddress),
-      ]);
-
-      const newEvents: NormalizedEvent[] = [];
-      for (const [payload, source] of [
-        [activity, "activity" as const],
-        [trades, "trades" as const],
-      ]) {
-        for (const item of payload) {
-          const eventId = generateEventId(item, source);
-          if (seenIds.has(eventId)) continue;
-          seenIds.add(eventId);
-          seenQueue.push(eventId);
-          while (seenQueue.length > MAX_EVENTS) {
-            const oldest = seenQueue.shift();
-            if (oldest) seenIds.delete(oldest);
-          }
-          newEvents.push(normalizeEvent(item, source));
-        }
-      }
-
-      if (newEvents.length > 0) {
-        writeEvents(normalizedAddress, [...newEvents.reverse(), ...allEvents].slice(0, MAX_EVENTS));
-      }
-
-      state.seen_ids = [...seenIds];
-      state.seen_queue = seenQueue;
-      state.last_check = utcNowIso();
-      writeState(normalizedAddress, state);
+      await syncWalletEvents(normalizedAddress, state);
     } catch (error) {
       appendError(normalizedAddress, error instanceof Error ? error.message : "Unknown polling error");
     }
@@ -383,10 +446,108 @@ const extractResponseText = (payload: Record<string, unknown>): string => {
   return "Model boş yanıt döndürdü.";
 };
 
+const getExternalWebhookBaseUrl = (req: IncomingMessage) => {
+  const configured = process.env.PUBLIC_WEBHOOK_BASE_URL?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+
+  const protoHeader = req.headers["x-forwarded-proto"];
+  const proto = (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader) || "http";
+  const hostHeader = req.headers["x-forwarded-host"] ?? req.headers.host;
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!host) return "";
+
+  return `${proto}://${host}`.replace(/\/$/, "");
+};
+
+const toWebhookPublicDto = (webhook: TrackerWebhook, req: IncomingMessage) => {
+  const baseUrl = getExternalWebhookBaseUrl(req);
+  const webhookUrl = baseUrl ? `${baseUrl}/api/tracker/webhook/${webhook.id}` : `/api/tracker/webhook/${webhook.id}`;
+  return {
+    id: webhook.id,
+    name: webhook.name ?? null,
+    createdAt: webhook.createdAt,
+    walletCount: webhook.walletAddresses.length,
+    walletAddresses: webhook.walletAddresses,
+    url: webhookUrl,
+  };
+};
+
+const attachWalletToWebhook = (address: string, webhookId?: string | null) => {
+  const normalizedAddress = normalizeWallet(address);
+  const state = readWebhooksState();
+
+  let webhook = webhookId
+    ? state.webhooks.find((item) => item.id === webhookId)
+    : undefined;
+
+  if (!webhook) {
+    webhook = state.webhooks[0];
+  }
+
+  if (!webhook) {
+    webhook = {
+      id: createWebhookId(),
+      name: "Varsayılan Webhook",
+      createdAt: utcNowIso(),
+      walletAddresses: [],
+    };
+    state.webhooks.push(webhook);
+  }
+
+  for (const hook of state.webhooks) {
+    hook.walletAddresses = hook.walletAddresses.filter((item) => item !== normalizedAddress);
+  }
+
+  if (!webhook.walletAddresses.includes(normalizedAddress)) {
+    webhook.walletAddresses.push(normalizedAddress);
+  }
+
+  writeWebhooksState(state);
+  return webhook;
+};
+
+const detachWalletFromWebhooks = (address: string) => {
+  const normalizedAddress = normalizeWallet(address);
+  const state = readWebhooksState();
+  for (const webhook of state.webhooks) {
+    webhook.walletAddresses = webhook.walletAddresses.filter((item) => item !== normalizedAddress);
+  }
+  writeWebhooksState(state);
+};
+
+const triggerWebhookSync = async (webhookId: string) => {
+  const state = readWebhooksState();
+  const webhook = state.webhooks.find((item) => item.id === webhookId);
+  if (!webhook) return { webhook: null, updated: [] as string[], failed: [] as string[] };
+
+  const updated: string[] = [];
+  const failed: string[] = [];
+
+  for (const address of webhook.walletAddresses) {
+    const normalizedAddress = normalizeWallet(address);
+    ensureWalletDir(normalizedAddress);
+    const runtimeState = runtimes.get(normalizedAddress)?.state ?? readState(normalizedAddress);
+
+    try {
+      await syncWalletEvents(normalizedAddress, runtimeState);
+      updated.push(normalizedAddress);
+      if (!runtimes.has(normalizedAddress)) {
+        startTracker(normalizedAddress);
+      }
+    } catch (error) {
+      appendError(normalizedAddress, error instanceof Error ? `Webhook sync failed: ${error.message}` : "Webhook sync failed");
+      failed.push(normalizedAddress);
+    }
+  }
+
+  return { webhook, updated, failed };
+};
+
 const createPolymarketTrackerPlugin = (): Plugin => ({
   name: "polymarket-local-tracker",
   configureServer(server) {
     fs.mkdirSync(TRACKING_ROOT, { recursive: true });
+    ensureDefaultWebhook();
 
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith("/api/tracker")) {
@@ -408,20 +569,48 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           return;
         }
 
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/webhooks")) {
+          const state = readWebhooksState();
+          sendJson(200, { webhooks: state.webhooks.map((webhook) => toWebhookPublicDto(webhook, req)) });
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/api/tracker/webhooks") {
+          const parsed = await readJsonBody<{ name?: string }>(req);
+          const state = readWebhooksState();
+          const webhook: TrackerWebhook = {
+            id: createWebhookId(),
+            name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : undefined,
+            createdAt: utcNowIso(),
+            walletAddresses: [],
+          };
+          state.webhooks.push(webhook);
+          writeWebhooksState(state);
+          sendJson(201, { webhook: toWebhookPublicDto(webhook, req) });
+          return;
+        }
+
         if (req.method === "POST" && req.url === "/api/tracker/start") {
-          const parsed = await readJsonBody<{ address?: string }>(req);
+          const parsed = await readJsonBody<{ address?: string; webhookId?: string | null }>(req);
           const address = normalizeWallet(parsed.address ?? "");
           if (!address) {
             sendJson(400, { error: "address is required" });
             return;
           }
 
+          const webhook = attachWalletToWebhook(address, parsed.webhookId ?? null);
           startTracker(address);
-          sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          sendJson(200, {
+            ok: true,
+            address,
+            storagePath: walletDir(address),
+            webhook: toWebhookPublicDto(webhook, req),
+          });
           return;
         }
 
         if (req.method === "GET" && req.url === "/api/tracker/list") {
+          const webhooksState = readWebhooksState();
           const wallets = fs
             .readdirSync(TRACKING_ROOT, { withFileTypes: true })
             .filter((entry) => entry.isDirectory())
@@ -429,6 +618,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
               const address = entry.name;
               const events = readEvents(address);
               const state = readState(address);
+              const webhook = webhooksState.webhooks.find((hook) => hook.walletAddresses.includes(address));
               return {
                 address,
                 eventCount: events.length,
@@ -436,6 +626,8 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
                 lastCheck: state.last_check,
                 isActive: runtimes.has(address),
                 storagePath: walletDir(address),
+                webhookId: webhook?.id ?? null,
+                webhookName: webhook?.name ?? null,
               };
             });
           sendJson(200, { wallets });
@@ -447,6 +639,24 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           const events = readEvents(address);
           const stats = computeEventStats(events);
           sendJson(200, { address, events, stats });
+          return;
+        }
+
+        if (req.method === "POST" && req.url?.startsWith("/api/tracker/webhook/")) {
+          const webhookId = req.url.replace("/api/tracker/webhook/", "").split("?")[0];
+          const result = await triggerWebhookSync(webhookId);
+
+          if (!result.webhook) {
+            sendJson(404, { error: "Webhook not found" });
+            return;
+          }
+
+          sendJson(200, {
+            ok: true,
+            webhook: toWebhookPublicDto(result.webhook, req),
+            updatedWallets: result.updated,
+            failedWallets: result.failed,
+          });
           return;
         }
 
@@ -496,6 +706,7 @@ ${context}`;
         if (req.method === "DELETE" && req.url?.startsWith("/api/tracker/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/", "").split("?")[0]);
           stopTracker(address);
+          detachWalletFromWebhooks(address);
           sendJson(200, { ok: true, address });
           return;
         }
