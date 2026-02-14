@@ -7,6 +7,7 @@ import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
 const POLL_INTERVAL_MS = 3000;
+const POLL_JITTER_MS = 900;
 const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
@@ -17,6 +18,8 @@ const DEFAULT_WEBHOOK_ID = "alchemy-default";
 const CALLBACK_PATH = "/api/tracker/webhooks/alchemy-default/callback";
 const ALCHEMY_NETWORK = (process.env.ALCHEMY_NETWORK ?? "eth-mainnet").toLowerCase();
 const ALCHEMY_WEBHOOK_API_URL = process.env.ALCHEMY_WEBHOOK_API_URL ?? "https://dashboard.alchemy.com/api/create-webhook";
+const WEBHOOK_HEALTHCHECK_MS = 60_000;
+const WEBHOOK_STALE_MS = 10 * 60 * 1000;
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
@@ -87,6 +90,7 @@ type WebhookConfig = {
   alchemyWebhookId?: string;
   status: "active" | "degraded";
   warning?: string;
+  lastWebhookAt?: string;
   walletAddresses: string[];
   createdAt: string;
   updatedAt: string;
@@ -95,6 +99,7 @@ type WebhookConfig = {
 const runtimes = new Map<string, TrackerRuntime>();
 let tunnelProcess: ChildProcessWithoutNullStreams | null = null;
 let tunnelUrl: string | null = null;
+let webhookHealthTimer: NodeJS.Timeout | null = null;
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -185,7 +190,11 @@ const readWebhookConfigs = (): WebhookConfig[] => {
     const raw = fs.readFileSync(WEBHOOKS_FILE, "utf-8");
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is WebhookConfig => Boolean(item && typeof item === "object"));
+    return parsed.filter((item): item is WebhookConfig => Boolean(item && typeof item === "object")).map((item) => ({
+      ...item,
+      walletAddresses: Array.isArray(item.walletAddresses) ? item.walletAddresses.map((wallet) => normalizeWallet(String(wallet))) : [],
+      lastWebhookAt: typeof item.lastWebhookAt === "string" ? item.lastWebhookAt : undefined,
+    }));
   } catch {
     return [];
   }
@@ -193,6 +202,16 @@ const readWebhookConfigs = (): WebhookConfig[] => {
 
 const writeWebhookConfigs = (configs: WebhookConfig[]) => {
   fs.writeFileSync(WEBHOOKS_FILE, JSON.stringify(configs, null, 2), "utf-8");
+};
+
+const parsePotentialWebhookId = (payload: Record<string, unknown>): string | null => {
+  const candidates = [payload.webhookId, payload.webhook_id, payload.id];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
 };
 
 
@@ -255,28 +274,44 @@ const upsertDefaultWebhook = async (): Promise<WebhookConfig> => {
 
   if (apiKey && authToken) {
     try {
-      const response = await fetch(ALCHEMY_WEBHOOK_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`,
-          "X-Alchemy-Token": authToken,
-        },
-        body: JSON.stringify({
-          webhook_type: "ADDRESS_ACTIVITY",
-          network: ALCHEMY_NETWORK,
-          webhook_url: callbackUrl,
-          addresses: next.walletAddresses,
-          webhook_id: next.alchemyWebhookId,
-          app_id: apiKey,
-        }),
-      });
+      const registerWebhook = async (webhookId?: string) => {
+        const response = await fetch(ALCHEMY_WEBHOOK_API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+            "X-Alchemy-Token": authToken,
+          },
+          body: JSON.stringify({
+            webhook_type: "ADDRESS_ACTIVITY",
+            network: ALCHEMY_NETWORK,
+            webhook_url: callbackUrl,
+            addresses: next.walletAddresses,
+            webhook_id: webhookId,
+            app_id: apiKey,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(`Alchemy webhook HTTP ${response.status}`);
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(`Alchemy webhook HTTP ${response.status}: ${body || "unknown error"}`);
+        }
+
+        return response.json() as Promise<Record<string, unknown>>;
+      };
+
+      let payload: Record<string, unknown>;
+      try {
+        payload = await registerWebhook(next.alchemyWebhookId);
+      } catch (error) {
+        const maybeNotFound = error instanceof Error && /404|not\s*found|bulunamad/i.test(error.message);
+        if (!maybeNotFound || !next.alchemyWebhookId) {
+          throw error;
+        }
+        next.alchemyWebhookId = undefined;
+        payload = await registerWebhook(undefined);
       }
 
-      const payload = await response.json() as Record<string, unknown>;
       const resolvedId = payload.id ?? payload.webhook_id;
       if (typeof resolvedId === "string" && resolvedId.trim()) {
         next.alchemyWebhookId = resolvedId;
@@ -296,6 +331,25 @@ const upsertDefaultWebhook = async (): Promise<WebhookConfig> => {
   const withoutDefault = existing.filter((hook) => hook.id !== DEFAULT_WEBHOOK_ID);
   writeWebhookConfigs([...withoutDefault, next]);
   return next;
+};
+
+const monitorWebhookHealth = async () => {
+  const configs = readWebhookConfigs();
+  const target = configs.find((item) => item.id === DEFAULT_WEBHOOK_ID);
+  if (!target) {
+    await upsertDefaultWebhook();
+    return;
+  }
+
+  const lastWebhookAtMs = target.lastWebhookAt ? toTimestampMs(target.lastWebhookAt) : null;
+  const stale = lastWebhookAtMs === null || (Date.now() - lastWebhookAtMs) > WEBHOOK_STALE_MS;
+  if (!stale) return;
+
+  target.status = "degraded";
+  target.warning = "Webhook callback uzun süredir alınamadı, yeniden kuruluyor";
+  target.updatedAt = utcNowIso();
+  writeWebhookConfigs(configs);
+  await upsertDefaultWebhook();
 };
 
 const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
@@ -472,9 +526,26 @@ const startTracker = (address: string) => {
     }
   };
 
-  tick();
-  const timer = setInterval(tick, POLL_INTERVAL_MS);
-  runtimes.set(normalizedAddress, { timer, state, tick });
+  const initialDelay = Math.floor(Math.random() * POLL_JITTER_MS);
+  const startPolling = () => {
+    void tick();
+    const timer = setInterval(() => {
+      void tick();
+    }, POLL_INTERVAL_MS + Math.floor(Math.random() * POLL_JITTER_MS));
+    runtimes.set(normalizedAddress, { timer, state, tick });
+  };
+
+  if (initialDelay <= 0) {
+    startPolling();
+    return;
+  }
+
+  const bootstrapTimer = setTimeout(startPolling, initialDelay);
+  runtimes.set(normalizedAddress, {
+    timer: bootstrapTimer,
+    state,
+    tick,
+  });
 };
 
 const refreshWalletNow = async (address: string) => {
@@ -538,6 +609,11 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
   configureServer(server) {
     fs.mkdirSync(TRACKING_ROOT, { recursive: true });
     void upsertDefaultWebhook();
+    if (!webhookHealthTimer) {
+      webhookHealthTimer = setInterval(() => {
+        void monitorWebhookHealth();
+      }, WEBHOOK_HEALTHCHECK_MS);
+    }
 
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith("/api/tracker")) {
@@ -674,15 +750,28 @@ ${context}`;
 
         if (req.method === "POST" && req.url === CALLBACK_PATH) {
           const payload = await readJsonBody<Record<string, unknown>>(req);
-          const webhookId = typeof payload.webhookId === "string" ? payload.webhookId : DEFAULT_WEBHOOK_ID;
+          const incomingWebhookId = parsePotentialWebhookId(payload);
           const configs = readWebhookConfigs();
-          const selected = configs.find((item) => item.id === webhookId);
+          let selected = configs.find((item) => item.id === DEFAULT_WEBHOOK_ID);
 
-          if (!selected) {
-            sendJson(404, { error: "Webhook bulunamadı" });
-            return;
+          if (incomingWebhookId) {
+            selected = configs.find((item) => item.id === incomingWebhookId || item.alchemyWebhookId === incomingWebhookId) ?? selected;
           }
 
+          if (!selected) {
+            selected = await upsertDefaultWebhook();
+          }
+
+          selected.lastWebhookAt = utcNowIso();
+          selected.status = "active";
+          selected.warning = undefined;
+          selected.updatedAt = utcNowIso();
+          if (incomingWebhookId && selected.alchemyWebhookId !== incomingWebhookId) {
+            selected.alchemyWebhookId = incomingWebhookId;
+          }
+
+          const withoutSelected = configs.filter((item) => item.id !== selected?.id);
+          writeWebhookConfigs([...withoutSelected, selected]);
           await Promise.all(selected.walletAddresses.map((address) => refreshWalletNow(address)));
 
           sendJson(200, {
