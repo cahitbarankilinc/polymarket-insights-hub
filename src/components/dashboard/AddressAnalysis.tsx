@@ -183,6 +183,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
   useEffect(() => {
     let active = true;
+    let timeoutId: number | undefined;
 
     const load = async () => {
       try {
@@ -194,14 +195,18 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         if (!active) return;
         setEvents([]);
         setBackendStats(null);
+      } finally {
+        if (!active) return;
+        timeoutId = window.setTimeout(() => {
+          void load();
+        }, 1000);
       }
     };
 
-    load();
-    const intervalId = setInterval(load, 8000);
+    void load();
     return () => {
       active = false;
-      clearInterval(intervalId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [address.address]);
 

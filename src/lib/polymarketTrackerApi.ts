@@ -79,7 +79,7 @@ export async function startWalletTracking(address: string) {
 }
 
 export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
-  const response = await fetch('/api/tracker/list');
+  const response = await fetch('/api/tracker/list', { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Takip listesi okunamadı');
   }
@@ -88,7 +88,7 @@ export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
 }
 
 export async function getWalletEventsWithStats(address: string): Promise<WalletEventsResponse> {
-  const response = await fetch(`/api/tracker/events/${address.toLowerCase()}`);
+  const response = await fetch(`/api/tracker/events/${address.toLowerCase()}`, { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Cüzdan eventleri alınamadı');
   }
