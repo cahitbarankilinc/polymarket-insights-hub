@@ -183,8 +183,11 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
   useEffect(() => {
     let active = true;
+    let timeoutId: number | undefined;
 
     const load = async () => {
+      const startedAt = Date.now();
+
       try {
         const payload = await getWalletEventsWithStats(address.address);
         if (!active) return;
@@ -194,14 +197,20 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         if (!active) return;
         setEvents([]);
         setBackendStats(null);
+      } finally {
+        if (!active) return;
+        const elapsedMs = Date.now() - startedAt;
+        const nextDelayMs = Math.max(0, 1000 - elapsedMs);
+        timeoutId = window.setTimeout(() => {
+          void load();
+        }, nextDelayMs);
       }
     };
 
-    load();
-    const intervalId = setInterval(load, 8000);
+    void load();
     return () => {
       active = false;
-      clearInterval(intervalId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [address.address]);
 

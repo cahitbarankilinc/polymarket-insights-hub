@@ -52,9 +52,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   });
 
   useEffect(() => {
-    const syncTracking = async () => {
+    let active = true;
+    let timeoutId: number | undefined;
+
+    const runSync = async () => {
+      const startedAt = Date.now();
+
       try {
         const wallets = await listTrackedWallets();
+        if (!active) return;
+
         const nextTrackerMap = wallets.reduce<Record<string, WalletTrackerInfo>>((acc, wallet) => {
           acc[wallet.address] = wallet;
           return acc;
@@ -66,15 +73,27 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
           const events = await getWalletEvents(address);
           return [address, events.slice(0, 3)] as const;
         }));
+
+        if (!active) return;
         setEventsMap(Object.fromEntries(eventsPairs));
       } catch {
         // local tracker dev server kapalı olabilir
+      } finally {
+        if (!active) return;
+        const elapsedMs = Date.now() - startedAt;
+        const nextDelayMs = Math.max(0, 1000 - elapsedMs);
+        timeoutId = window.setTimeout(() => {
+          void runSync();
+        }, nextDelayMs);
       }
     };
 
-    syncTracking();
-    const id = setInterval(syncTracking, 5000);
-    return () => clearInterval(id);
+    void runSync();
+
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
   }, [addresses]);
 
   if (analysisAddress) {

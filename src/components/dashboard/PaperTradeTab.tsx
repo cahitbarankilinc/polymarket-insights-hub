@@ -144,7 +144,7 @@ const resolveMarketKey = (event: WalletTrackerEvent): string | null => {
   return market || null;
 };
 
-const TRACKER_POLL_MS = 7000;
+const TRACKER_POLL_MS = 1000;
 
 const toEventTimestamp = (event: WalletTrackerEvent): number => {
   const candidates = [event.event_time, event.seen_at_utc];
@@ -216,6 +216,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
   const copySessionsRef = useRef(copySessions);
+  const syncingWalletsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     copySessionsRef.current = copySessions;
@@ -443,8 +444,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
 
   const syncWalletCopyTrades = useCallback(async (addressId: string) => {
+    if (syncingWalletsRef.current.has(addressId)) return;
+    syncingWalletsRef.current.add(addressId);
+
     const targetAddress = addresses.find((address) => address.id === addressId);
-    if (!targetAddress) return;
+    if (!targetAddress) {
+      syncingWalletsRef.current.delete(addressId);
+      return;
+    }
 
     setCopySessions((prev) => {
       const current = prev[addressId];
@@ -576,6 +583,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         if (!current || current.status === 'idle') return prev;
         return { ...prev, [addressId]: { ...current, status: 'running' } };
       });
+    } finally {
+      syncingWalletsRef.current.delete(addressId);
     }
   }, [addresses, calculateTradeUsd, startPaperTrade, walletConfigs]);
 
@@ -586,17 +595,32 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     if (!runningWalletIds.length) return;
 
-    const intervalId = window.setInterval(() => {
+    let active = true;
+    let timeoutId: number | undefined;
+
+    const tick = async () => {
+      const startedAt = Date.now();
       const currentlyRunningIds = Object.entries(copySessionsRef.current)
         .filter(([, session]) => session.status !== 'idle')
         .map(([walletId]) => walletId);
-      currentlyRunningIds.forEach((walletId) => {
-        void syncWalletCopyTrades(walletId);
-      });
-    }, TRACKER_POLL_MS);
+
+      await Promise.all(currentlyRunningIds.map(async (walletId) => {
+        await syncWalletCopyTrades(walletId);
+      }));
+
+      if (!active) return;
+      const elapsedMs = Date.now() - startedAt;
+      const nextDelayMs = Math.max(0, TRACKER_POLL_MS - elapsedMs);
+      timeoutId = window.setTimeout(() => {
+        void tick();
+      }, nextDelayMs);
+    };
+
+    void tick();
 
     return () => {
-      window.clearInterval(intervalId);
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [copySessions, syncWalletCopyTrades]);
 
