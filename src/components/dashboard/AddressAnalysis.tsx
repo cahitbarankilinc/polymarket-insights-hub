@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save, Bot } from 'lucide-react';
 import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { getWalletEventsWithStats, requestCopytradeAdvisor, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
+import { getMarketQuote, getWalletEventsWithStats, requestCopytradeAdvisor, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
 interface Props {
   address: TrackedAddress;
@@ -83,6 +83,25 @@ const formatDecimal = (value: number | undefined) => {
   return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
 };
 
+
+type EventQuoteRow = {
+  bidCents: number | null;
+  askCents: number | null;
+};
+
+const toPriceCents = (value: number) => (value <= 1.5 ? value * 100 : value);
+
+const formatCents = (value: number | null | undefined) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return `${value.toLocaleString('tr-TR', { maximumFractionDigits: 3 })}¢`;
+};
+
+const formatSignedCents = (value: number | null | undefined) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toLocaleString('tr-TR', { maximumFractionDigits: 3 })}¢`;
+};
+
 const stripEtTimeSuffix = (value: string) => {
   const compact = value.trim();
   if (!compact) return compact;
@@ -153,6 +172,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const [advisorError, setAdvisorError] = useState<string | null>(null);
   const [advisorResult, setAdvisorResult] = useState<string | null>(null);
   const [advisorUpdatedAt, setAdvisorUpdatedAt] = useState<string | null>(null);
+  const [eventQuotes, setEventQuotes] = useState<Record<string, EventQuoteRow>>({});
 
   const advisorStorageKey = useMemo(() => `copytrade-advisor:${address.address.toLowerCase()}`, [address.address]);
 
@@ -221,6 +241,46 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       return bTs - aTs;
     })
     .slice(0, 30), [events]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadQuotes = async () => {
+      const uniquePairs = new Map<string, { market: string; outcome: string }>();
+
+      for (const event of latest30) {
+        const market = (event.market_slug ?? event.market ?? '').trim();
+        const outcome = (event.outcome ?? '').trim();
+        if (!market || !outcome) continue;
+
+        const key = `${market.toLowerCase()}|${outcome.toLowerCase()}`;
+        if (!uniquePairs.has(key)) uniquePairs.set(key, { market, outcome });
+      }
+
+      if (uniquePairs.size === 0) {
+        if (active) setEventQuotes({});
+        return;
+      }
+
+      const entries = await Promise.all(Array.from(uniquePairs.entries()).map(async ([key, pair]) => {
+        try {
+          const quote = await getMarketQuote(pair.market, pair.outcome);
+          return [key, { bidCents: quote.bidCents, askCents: quote.askCents }] as const;
+        } catch {
+          return [key, { bidCents: null, askCents: null }] as const;
+        }
+      }));
+
+      if (!active) return;
+      setEventQuotes(Object.fromEntries(entries));
+    };
+
+    void loadQuotes();
+    return () => {
+      active = false;
+    };
+  }, [latest30]);
+
 
   const { buyPriceShareData, buyPriceUsdData } = useMemo(() => {
     const limitedEvents = [...events]
@@ -717,11 +777,25 @@ export default function AddressAnalysis({ address, onBack }: Props) {
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
-                    Price: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}Share: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
-                    {' '}USD: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
-                  </p>
+                  {(() => {
+                    const marketKey = (event.market_slug ?? event.market ?? '').trim().toLowerCase();
+                    const outcomeKey = (event.outcome ?? '').trim().toLowerCase();
+                    const quoteKey = `${marketKey}|${outcomeKey}`;
+                    const quote = eventQuotes[quoteKey];
+                    const sideQuoteCents = isBuy ? quote?.askCents ?? null : isSell ? quote?.bidCents ?? null : null;
+                    const priceCents = toPriceCents(toNumber(event.price));
+                    const diffCents = sideQuoteCents === null ? null : Number((priceCents - sideQuoteCents).toFixed(3));
+
+                    return (
+                      <p className={`text-sm font-semibold ${isBuy ? 'text-accent' : isSell ? 'text-warning' : 'text-foreground'}`}>
+                        Fark: {formatSignedCents(diffCents)} •
+                        {' '}Canlı {isSell ? 'Bid' : 'Ask'}: {formatCents(sideQuoteCents)} •
+                        {' '}Price: {toNumber(event.price).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                        {' '}Share: {toNumber(event.size).toLocaleString('tr-TR', { maximumFractionDigits: 6 })} •
+                        {' '}USD: {toNumber(event.value_usd).toLocaleString('tr-TR', { maximumFractionDigits: 6 })}
+                      </p>
+                    );
+                  })()}
                   <p className="text-[10px] text-muted-foreground">{formatBerlin(event.seen_at_utc)}</p>
                 </div>
               </div>
