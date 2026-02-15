@@ -6,7 +6,7 @@ import { spawnSync } from "child_process";
 import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 1000;
 const MAX_EVENTS = 200;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
@@ -67,7 +67,7 @@ type TrackerState = {
 };
 
 type TrackerRuntime = {
-  timer: NodeJS.Timeout;
+  stop: () => void;
   state: TrackerState;
 };
 
@@ -289,7 +289,11 @@ const startTracker = (address: string) => {
   ensureWalletDir(normalizedAddress);
   const state = readState(normalizedAddress);
 
+  let active = true;
+  let timeout: NodeJS.Timeout | null = null;
+
   const tick = async () => {
+    const startedAt = Date.now();
     const allEvents = readEvents(normalizedAddress);
     const seenIds = new Set(state.seen_ids);
     const seenQueue = [...state.seen_queue];
@@ -322,25 +326,38 @@ const startTracker = (address: string) => {
         writeEvents(normalizedAddress, [...newEvents.reverse(), ...allEvents].slice(0, MAX_EVENTS));
       }
 
+      if (!active) return;
       state.seen_ids = [...seenIds];
       state.seen_queue = seenQueue;
       state.last_check = utcNowIso();
       writeState(normalizedAddress, state);
     } catch (error) {
       appendError(normalizedAddress, error instanceof Error ? error.message : "Unknown polling error");
+    } finally {
+      if (!active) return;
+      const elapsedMs = Date.now() - startedAt;
+      const nextDelayMs = Math.max(0, POLL_INTERVAL_MS - elapsedMs);
+      timeout = setTimeout(() => {
+        void tick();
+      }, nextDelayMs);
     }
   };
 
-  tick();
-  const timer = setInterval(tick, POLL_INTERVAL_MS);
-  runtimes.set(normalizedAddress, { timer, state });
+  void tick();
+  runtimes.set(normalizedAddress, {
+    state,
+    stop: () => {
+      active = false;
+      if (timeout) clearTimeout(timeout);
+    },
+  });
 };
 
 const stopTracker = (address: string) => {
   const normalizedAddress = normalizeWallet(address);
   const runtime = runtimes.get(normalizedAddress);
   if (!runtime) return;
-  clearInterval(runtime.timer);
+  runtime.stop();
   runtimes.delete(normalizedAddress);
 };
 
