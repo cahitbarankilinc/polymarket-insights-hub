@@ -6,10 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Play,
-  TrendingDown,
-  TrendingUp,
   Wallet,
-  X,
 } from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
 import { getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
@@ -203,7 +200,7 @@ const getEventKey = (event: WalletTrackerEvent): string => (
 );
 
 export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
-  const { addresses, paperTrades, startPaperTrade, closePaperTrade, paperBudget, setPaperBudget } = useDashboard();
+  const { addresses, paperTrades, startPaperTrade, paperBudget, setPaperBudget } = useDashboard();
   const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
   const [collapsed, setCollapsed] = useState(false);
   const [budgetMode, setBudgetMode] = useState<'unlimited' | 'limited'>(paperBudget.mode);
@@ -323,6 +320,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         walletAddress: wallet?.address,
       };
     }), [addresses, copySessions]);
+  const passiveSessions = useMemo(() => addresses
+    .filter((wallet) => copySessions[wallet.id]?.status !== 'running' && copySessions[wallet.id]?.status !== 'syncing')
+    .map((wallet) => ({
+      addressId: wallet.id,
+      walletName: wallet.username || wallet.label || wallet.address || wallet.id,
+      walletAddress: wallet.address,
+    })), [addresses, copySessions]);
 
   const analysisTrades = useMemo(
     () => tradesWithAddress.filter((trade) => trade.addressId === analysisAddressId),
@@ -829,52 +833,6 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             </div>
           </div>
 
-          <div className="mb-6">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTIF TRADELER ({activeTrades.length})</h3>
-            {activeTrades.length === 0 && <div className="glass-card p-6 text-center text-muted-foreground text-sm">Henüz aktif trade yok</div>}
-            <div className="space-y-2">
-              {activeTrades.map(trade => {
-                const pnl = (trade.currentPrice - trade.entryPrice) * trade.amount * (trade.direction === 'long' ? 1 : -1);
-                const pnlPercent = ((trade.currentPrice - trade.entryPrice) / trade.entryPrice * 100) * (trade.direction === 'long' ? 1 : -1);
-                const isProfit = pnl > 0;
-                return (
-                  <div key={trade.id} role="button" tabIndex={0} onClick={() => openAnalysis(trade.addressId)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ' ) openAnalysis(trade.addressId); }} className="glass-card p-4 w-full text-left border border-transparent hover:border-primary/40 transition-colors cursor-pointer">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.direction === 'long' ? 'bg-accent/15 text-accent' : 'bg-destructive/15 text-destructive'}`}>{trade.direction.toUpperCase()}</span>
-                        <span className="text-xs font-medium text-foreground">{trade.strategy}</span>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); openAnalysis(trade.addressId); }} className="text-[10px] text-primary hover:underline">{trade.walletName}</button>
-                        <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-semibold">AKTİF</span>
-                      </div>
-                      <span className="text-[11px] text-muted-foreground">Analiz için tıkla →</span>
-                    </div>
-                    <p className="font-mono text-[10px] text-muted-foreground truncate mb-2">{trade.address}</p>
-                    <div className="flex items-center justify-between">
-                      <div className="grid grid-cols-4 gap-4">
-                        <div><p className="text-[10px] text-muted-foreground">Giriş</p><p className="text-sm font-mono font-medium text-foreground">${trade.entryPrice.toLocaleString()}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Güncel</p><p className="text-sm font-mono font-medium text-foreground">${trade.currentPrice.toLocaleString()}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Tutar</p><p className="text-sm font-mono font-medium text-foreground">${(trade.spentUsd || 0).toFixed(2)}</p></div>
-                        <div><p className="text-[10px] text-muted-foreground">Başlangıç</p><p className="text-xs font-medium text-foreground">{formatDate(new Date(trade.startedAt))}</p></div>
-                      </div>
-                      <div className="text-right">
-                        <p className={`text-lg font-bold ${isProfit ? 'text-accent' : 'text-destructive'}`}>{isProfit ? '+' : ''}{pnl.toFixed(2)} $</p>
-                        <p className={`text-xs font-medium ${isProfit ? 'text-accent' : 'text-destructive'}`}>{isProfit ? <TrendingUp className="w-3 h-3 inline" /> : <TrendingDown className="w-3 h-3 inline" />} {' '}{isProfit ? '+' : ''}{pnlPercent.toFixed(2)}%</p>
-                      </div>
-                    </div>
-                    <div className="mt-3 border-t border-border/20 pt-2">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); closePaperTrade(trade.id); toast.success('Trade kapatıldı'); }}
-                        className="px-3 py-1 rounded-lg text-xs font-medium bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20"
-                      >
-                        <X className="w-3 h-3 inline mr-1" /> Kapat
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           {runningSessions.length > 0 && (
             <div className="mb-6">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
@@ -911,6 +869,41 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               </div>
             </div>
           )}
+
+          <div className="mb-6">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Pasif Tradeler ({passiveSessions.length})</h3>
+            {passiveSessions.length === 0 ? (
+              <div className="glass-card p-6 text-center text-muted-foreground text-sm">Takip edilmeyen cüzdan yok</div>
+            ) : (
+              <div className="space-y-2">
+                {passiveSessions.map(({ addressId, walletName, walletAddress }) => {
+                  const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
+                  return (
+                    <div key={addressId} className="glass-card p-4 border border-border/30">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-xs font-semibold text-foreground">{walletName}</p>
+                          <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan şu an takip edilmiyor. Takibi başlatmadan yeni trade otomatik oluşmaz.</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">TAKİP PASİF</span>
+                          <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
+                          <button
+                            type="button"
+                            onClick={() => openAnalysis(addressId)}
+                            className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
+                          >
+                            Analize Git
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {closedTrades.length > 0 && (
             <div>
