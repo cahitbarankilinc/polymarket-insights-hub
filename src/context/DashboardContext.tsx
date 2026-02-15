@@ -41,6 +41,8 @@ export interface PaperTrade {
   copyMode?: CopyMode;
   spentUsd?: number;
   side?: 'BUY' | 'SELL';
+  market?: string;
+  outcome?: string;
 }
 
 export interface PaperBudget {
@@ -60,6 +62,8 @@ interface StartPaperTradeInput {
   entryPrice?: number;
   shareAmount?: number;
   side?: 'BUY' | 'SELL';
+  market?: string;
+  outcome?: string;
 }
 
 interface DashboardContextType {
@@ -210,6 +214,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       copyMode: input.copyMode,
       spentUsd: spendUsd,
       side: input.side,
+      market: input.market,
+      outcome: input.outcome,
     };
     setPaperTrades(prev => [...prev, trade]);
     return { ok: true };

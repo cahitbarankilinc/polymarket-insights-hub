@@ -49,6 +49,7 @@ const defaultConfig: WalletModeConfig = {
 
 const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}`;
 const formatDate = (value: Date) => value.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const MAX_TRADES_FOR_CHART = 100;
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
   if (!value) return undefined;
@@ -124,7 +125,8 @@ interface TradeActivity {
   id: string;
   side: 'BUY' | 'SELL';
   occurredAt: Date;
-  marketLabel: string;
+  market: string;
+  outcome: string;
   price: number;
   share: number;
   usd: number;
@@ -212,6 +214,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [copySessionErrors, setCopySessionErrors] = useState<Record<string, string | null>>({});
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
+  const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const copySessionsRef = useRef(copySessions);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
 
@@ -339,13 +342,18 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return wallet?.username || wallet?.label || wallet?.address || '';
   }, [addresses, analysisAddressId]);
 
+  useEffect(() => {
+    setVisibleActivityCount(20);
+  }, [analysisAddressId]);
+
   const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades
     .filter((trade) => trade.side !== 'SELL')
     .map((trade) => ({
     id: `${trade.id}-buy`,
     side: 'BUY',
     occurredAt: new Date(trade.startedAt),
-    marketLabel: trade.marketLabel,
+    market: trade.market || '-',
+    outcome: trade.outcome || '-',
     price: trade.entryPrice,
     share: trade.amount,
     usd: trade.buyUsd,
@@ -357,7 +365,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       id: `${trade.id}-sell`,
       side: 'SELL',
       occurredAt: new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)),
-      marketLabel: trade.marketLabel,
+      market: trade.market || '-',
+      outcome: trade.outcome || '-',
       price: trade.side === 'SELL' ? trade.entryPrice : trade.currentPrice,
       share: trade.amount,
       usd: trade.sellUsd,
@@ -389,8 +398,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   }, [analysisTrades, myActivities.length, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type]);
 
   const sharePriceData = useMemo(() => {
+    const recentTrades = [...analysisTrades]
+      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+      .slice(0, MAX_TRADES_FOR_CHART);
+
     const grouped = new Map<number, { share: number; usdSpent: number }>();
-    for (const trade of analysisTrades) {
+    for (const trade of recentTrades) {
       const bucket = Number(trade.entryPrice.toFixed(2));
       const row = grouped.get(bucket) || { share: 0, usdSpent: 0 };
       row.share += trade.amount;
@@ -550,6 +563,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           entryPrice: eventPrice,
           shareAmount: shouldUseSourceShares ? eventSize : undefined,
           side: eventSide,
+          market: event.market ?? undefined,
+          outcome: event.outcome ?? undefined,
         });
 
         if (result.ok) {
@@ -966,17 +981,32 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <div className="p-3 rounded-lg border border-border/30 bg-secondary/10">
                 <h4 className="text-xs font-semibold text-foreground mb-2">Son Aktiviteler</h4>
                 <div className="space-y-2">
-                  {myActivities.slice(0, 30).map((activity) => (
+                  {myActivities.slice(0, visibleActivityCount).map((activity) => (
                     <div key={activity.id} className="flex items-center justify-between border-b border-border/20 pb-2 last:border-0 last:pb-0">
                       <div className="flex items-center gap-3">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${activity.side === 'BUY' ? 'bg-accent/10' : 'bg-warning/10'}`}>
                           {activity.side === 'BUY' ? <ArrowDownRight className="w-4 h-4 text-accent" /> : <ArrowUpRight className="w-4 h-4 text-warning" />}
                         </div>
-                        <div><p className="text-xs font-medium text-foreground">{activity.marketLabel}</p><p className="text-[10px] text-muted-foreground">{activity.side} • {formatDate(activity.occurredAt)}</p></div>
+                        <div>
+                          <p className="text-xs font-medium text-foreground">{activity.market}</p>
+                          <p className="font-mono text-[10px] text-muted-foreground">{activity.outcome}</p>
+                          <p className="text-[10px] text-muted-foreground">{activity.side} • {formatDate(activity.occurredAt)}</p>
+                        </div>
                       </div>
                       <p className="text-xs text-foreground text-right">Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}</p>
                     </div>
                   ))}
+                  {myActivities.length > visibleActivityCount && (
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-border/40 bg-secondary/20 hover:bg-secondary/35 transition-colors"
+                        onClick={() => setVisibleActivityCount((prev) => prev + 20)}
+                      >
+                        Daha Fazla
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </>

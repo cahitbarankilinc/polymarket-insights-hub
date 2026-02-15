@@ -132,7 +132,7 @@ const normalizeMarketLabel = (market: string | null | undefined) => {
 type SortColumn = 'label' | 'buyUsd' | 'totalUsd' | 'tradeCount';
 type SortDirection = 'asc' | 'desc';
 
-const MAX_EVENTS_FOR_CHART = 20000;
+const MAX_EVENTS_FOR_CHART = 100;
 
 const resolvePriceBucketSize = (buyEventCount: number) => {
   if (buyEventCount > 10000) return 0.02;
@@ -223,7 +223,9 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     .slice(0, 30), [events]);
 
   const { buyPriceShareData, buyPriceUsdData } = useMemo(() => {
-    const limitedEvents = events.slice(0, MAX_EVENTS_FOR_CHART);
+    const limitedEvents = [...events]
+      .sort((a, b) => (toTimestampMs(b.event_time) ?? toTimestampMs(b.seen_at_utc) ?? 0) - (toTimestampMs(a.event_time) ?? toTimestampMs(a.seen_at_utc) ?? 0))
+      .slice(0, MAX_EVENTS_FOR_CHART);
     const buyEventCount = limitedEvents.reduce((count, event) => count + (((event.side ?? '').toUpperCase() === 'BUY') ? 1 : 0), 0);
     const bucketSize = resolvePriceBucketSize(buyEventCount);
 
@@ -485,7 +487,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="glass-card p-4">
           <h3 className="text-sm font-semibold text-foreground">Share/Adet Grafiği</h3>
-          <p className="text-xs text-muted-foreground mb-3">Yoğun veri geldiğinde adaptif fiyat kovası modeli ile gruplama uygulanır, böylece grafik akıcı kalır.</p>
+          <p className="text-xs text-muted-foreground mb-3">Sadece son 100 trade buy verisi görselleştirilir; bu yüzden grafik daha okunaklı kalır.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
@@ -541,7 +543,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
 
         <div className="glass-card p-4">
           <h3 className="text-sm font-semibold text-foreground">Price/Adet Grafiği</h3>
-          <p className="text-xs text-muted-foreground mb-3">Aynı model USD dağılımına da uygulanır; okunabilirlik korunurken donmalar azaltılır.</p>
+          <p className="text-xs text-muted-foreground mb-3">USD dağılımı grafiği de yalnızca son 100 trade buy verisini kullanır.</p>
           <ResponsiveContainer width="100%" height={220}>
             <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
