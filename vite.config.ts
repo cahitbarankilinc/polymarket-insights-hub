@@ -45,12 +45,24 @@ type NormalizedEvent = {
   type?: string | null;
   side?: string | null;
   market?: string | null;
+  market_slug?: string | null;
   outcome?: string | null;
+  asset_id?: string | null;
   price?: number | null;
   size?: number | null;
   value_usd?: number | null;
   tx_hash?: string | null;
   raw_source: "activity" | "trades";
+};
+
+type MarketQuote = {
+  market: string;
+  outcome: string;
+  assetId: string;
+  bid: number | null;
+  ask: number | null;
+  bidCents: number | null;
+  askCents: number | null;
 };
 
 type WalletEventStats = {
@@ -72,6 +84,8 @@ type TrackerRuntime = {
 };
 
 const runtimes = new Map<string, TrackerRuntime>();
+const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
+const QUOTE_TTL_MS = 1500;
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -216,13 +230,101 @@ const normalizeEvent = (raw: RawEvent, source: "activity" | "trades"): Normalize
     type: (raw.type ?? raw.eventType ?? (source === "trades" ? "TRADE" : null)) as string | null,
     side: (raw.side ?? raw.action ?? null) as string | null,
     market: (raw.question ?? raw.slug ?? raw.market ?? raw.marketId ?? null) as string | null,
+    market_slug: (raw.slug ?? raw.marketSlug ?? raw.market_slug ?? null) as string | null,
     outcome: (raw.outcome ?? raw.outcomeName ?? raw.token ?? null) as string | null,
+    asset_id: (raw.asset_id ?? raw.assetId ?? raw.tokenId ?? raw.token_id ?? null) as string | null,
     price,
     size,
     value_usd: valueFromEvent ?? (price !== null && size !== null ? Number((price * size).toFixed(6)) : null),
     tx_hash: (raw.transactionHash ?? raw.txHash ?? raw.hash ?? null) as string | null,
     raw_source: source,
   };
+};
+
+const maybeJson = (value: unknown): unknown => {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value) || typeof value === "object") return value;
+  if (typeof value !== "string") return value;
+
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}")))) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+};
+
+const normalizeToken = (value: string) => value.trim().toLowerCase();
+
+const resolveQuoteFromMarket = async (marketSlug: string, outcome: string): Promise<MarketQuote | null> => {
+  const marketResponse = await fetch(`https://gamma-api.polymarket.com/markets/slug/${encodeURIComponent(marketSlug)}`, { cache: "no-store" });
+  if (!marketResponse.ok) return null;
+
+  const marketPayload = await marketResponse.json() as Record<string, unknown>;
+  const tokenIds = maybeJson(marketPayload.clobTokenIds);
+  const outcomes = maybeJson(marketPayload.outcomes);
+
+  if (!Array.isArray(tokenIds) || tokenIds.length === 0 || !Array.isArray(outcomes) || outcomes.length === 0) {
+    return null;
+  }
+
+  const normalizedOutcome = normalizeToken(outcome);
+  let outcomeIndex = outcomes.findIndex((candidate) => normalizeToken(String(candidate)) === normalizedOutcome);
+  if (outcomeIndex === -1) {
+    outcomeIndex = outcomes.findIndex((candidate) => normalizeToken(String(candidate)).includes(normalizedOutcome));
+  }
+  if (outcomeIndex === -1 || outcomeIndex >= tokenIds.length) return null;
+
+  const assetId = String(tokenIds[outcomeIndex]);
+  const bookResponse = await fetch(`https://clob.polymarket.com/book?token_id=${encodeURIComponent(assetId)}`, { cache: "no-store" });
+  if (!bookResponse.ok) return null;
+
+  const bookPayload = await bookResponse.json() as Record<string, unknown>;
+  const bids = Array.isArray(bookPayload.bids) ? bookPayload.bids : [];
+  const asks = Array.isArray(bookPayload.asks) ? bookPayload.asks : [];
+
+  let bid: number | null = null;
+  let ask: number | null = null;
+
+  const bidPrices = bids
+    .map((row) => (row && typeof row === "object" ? toFloat((row as Record<string, unknown>).price) : null))
+    .filter((price): price is number => typeof price === "number");
+  if (bidPrices.length > 0) bid = Math.max(...bidPrices);
+
+  const askPrices = asks
+    .map((row) => (row && typeof row === "object" ? toFloat((row as Record<string, unknown>).price) : null))
+    .filter((price): price is number => typeof price === "number");
+  if (askPrices.length > 0) ask = Math.min(...askPrices);
+
+  return {
+    market: marketSlug,
+    outcome,
+    assetId,
+    bid,
+    ask,
+    bidCents: bid === null ? null : Number((bid * 100).toFixed(4)),
+    askCents: ask === null ? null : Number((ask * 100).toFixed(4)),
+  };
+};
+
+const getLiveQuote = async (marketSlug: string, outcome: string): Promise<MarketQuote | null> => {
+  const cleanMarket = marketSlug.trim();
+  const cleanOutcome = outcome.trim();
+  if (!cleanMarket || !cleanOutcome) return null;
+
+  const cacheKey = `${normalizeToken(cleanMarket)}|${normalizeToken(cleanOutcome)}`;
+  const now = Date.now();
+  const cached = quoteCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = await resolveQuoteFromMarket(cleanMarket, cleanOutcome);
+  quoteCache.set(cacheKey, { value, expiresAt: now + QUOTE_TTL_MS });
+  return value;
 };
 
 
@@ -471,6 +573,26 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
           const events = readEvents(address);
           const stats = computeEventStats(events);
           sendJson(200, { address, events, stats });
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/quote")) {
+          const requestUrl = new URL(req.url, "http://localhost");
+          const market = requestUrl.searchParams.get("market") ?? "";
+          const outcome = requestUrl.searchParams.get("outcome") ?? "";
+
+          if (!market || !outcome) {
+            sendJson(400, { error: "market and outcome are required" });
+            return;
+          }
+
+          const quote = await getLiveQuote(market, outcome);
+          if (!quote) {
+            sendJson(404, { error: "quote could not be resolved" });
+            return;
+          }
+
+          sendJson(200, quote);
           return;
         }
 

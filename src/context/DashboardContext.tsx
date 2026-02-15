@@ -42,6 +42,7 @@ export interface PaperTrade {
   spentUsd?: number;
   side?: 'BUY' | 'SELL';
   market?: string;
+  marketSlug?: string;
   outcome?: string;
 }
 
@@ -63,6 +64,7 @@ interface StartPaperTradeInput {
   shareAmount?: number;
   side?: 'BUY' | 'SELL';
   market?: string;
+  marketSlug?: string;
   outcome?: string;
 }
 
@@ -88,6 +90,12 @@ const DEFAULT_CATEGORIES = ['Whales', 'Smart Money', 'Market Makers', 'Influence
 // Mock price generation
 const randomPrice = () => +(Math.random() * 100000 + 20000).toFixed(2);
 const todayKey = () => new Date().toISOString().slice(0, 10);
+const createTradeId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const [addresses, setAddresses] = useState<TrackedAddress[]>([]);
@@ -200,7 +208,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       ? input.shareAmount
       : (spendUsd > 0 ? +(spendUsd / price).toFixed(6) : 0.001);
     const trade: PaperTrade = {
-      id: Date.now().toString(),
+      id: createTradeId(),
       addressId,
       address: addr.address,
       category: addr.category,
@@ -215,6 +223,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       spentUsd: spendUsd,
       side: input.side,
       market: input.market,
+      marketSlug: input.marketSlug,
       outcome: input.outcome,
     };
     setPaperTrades(prev => [...prev, trade]);

@@ -9,7 +9,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
-import { getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
+import { getMarketQuote, getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
 import { Scatter, ScatterChart, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { toast } from 'sonner';
 
@@ -126,10 +126,17 @@ interface TradeActivity {
   side: 'BUY' | 'SELL';
   occurredAt: Date;
   market: string;
+  marketSlug?: string;
   outcome: string;
   price: number;
   share: number;
   usd: number;
+}
+
+interface ActivityQuoteState {
+  benchmarkPrice: number;
+  diffPrice: number;
+  benchmarkLabel: 'Ask' | 'Bid';
 }
 
 interface CopySessionState {
@@ -144,6 +151,14 @@ const resolveMarketKey = (event: WalletTrackerEvent): string | null => {
 };
 
 const TRACKER_POLL_MS = 1000;
+const QUOTE_RETRY_DELAY_MS = 500;
+const QUOTE_MAX_ATTEMPTS = 3;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const formatPrice = (value: number) => value.toLocaleString('tr-TR', { maximumFractionDigits: 4 });
+
+const formatSignedPrice = (value: number) => `${value > 0 ? '+' : ''}${value.toLocaleString('tr-TR', { maximumFractionDigits: 4 })}`;
 
 const toEventTimestamp = (event: WalletTrackerEvent): number => {
   const candidates = [event.event_time, event.seen_at_utc];
@@ -215,6 +230,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
+  const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
   const copySessionsRef = useRef(copySessions);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
 
@@ -349,10 +365,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const buyActivities = useMemo<TradeActivity[]>(() => analysisTrades
     .filter((trade) => trade.side !== 'SELL')
     .map((trade) => ({
-    id: `${trade.id}-buy`,
+    id: `${trade.id}-buy-${new Date(trade.startedAt).getTime()}-${trade.market ?? ''}-${trade.outcome ?? ''}-${trade.amount}`,
     side: 'BUY',
     occurredAt: new Date(trade.startedAt),
     market: trade.market || '-',
+    marketSlug: trade.marketSlug,
     outcome: trade.outcome || '-',
     price: trade.entryPrice,
     share: trade.amount,
@@ -362,10 +379,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const sellActivities = useMemo<TradeActivity[]>(() => analysisTrades
     .filter((trade) => trade.side === 'SELL' || trade.status === 'closed')
     .map((trade) => ({
-      id: `${trade.id}-sell`,
+      id: `${trade.id}-sell-${new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)).getTime()}-${trade.market ?? ''}-${trade.outcome ?? ''}-${trade.amount}`,
       side: 'SELL',
       occurredAt: new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)),
       market: trade.market || '-',
+      marketSlug: trade.marketSlug,
       outcome: trade.outcome || '-',
       price: trade.side === 'SELL' ? trade.entryPrice : trade.currentPrice,
       share: trade.amount,
@@ -376,6 +394,59 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     () => [...buyActivities, ...sellActivities].sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime()),
     [buyActivities, sellActivities],
   );
+
+  useEffect(() => {
+    let active = true;
+
+    const fetchActivityQuote = async (activity: TradeActivity): Promise<ActivityQuoteState | null> => {
+      const market = (activity.marketSlug ?? activity.market ?? '').trim();
+      const outcome = (activity.outcome ?? '').trim();
+      if (!market || !outcome || outcome === '-') return null;
+
+      for (let attempt = 0; attempt < QUOTE_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          const quote = await getMarketQuote(market, outcome);
+          const benchmark = activity.side === 'BUY' ? quote.askCents : quote.bidCents;
+          if (typeof benchmark === 'number' && benchmark > 0) {
+            const benchmarkPrice = benchmark / 100;
+            return {
+              benchmarkPrice,
+              diffPrice: Number((activity.price - benchmarkPrice).toFixed(6)),
+              benchmarkLabel: activity.side === 'BUY' ? 'Ask' : 'Bid',
+            };
+          }
+        } catch {
+          // Ignore transient quote errors and retry limited times.
+        }
+
+        if (attempt < QUOTE_MAX_ATTEMPTS - 1) await delay(QUOTE_RETRY_DELAY_MS);
+      }
+
+      return null;
+    };
+
+    const loadQuotes = async () => {
+      const pendingActivities = myActivities.filter((activity) => !activityQuotes[activity.id]);
+      if (pendingActivities.length === 0) return;
+
+      const loaded = await Promise.all(pendingActivities.map(async (activity) => {
+        const result = await fetchActivityQuote(activity);
+        return [activity.id, result] as const;
+      }));
+
+      if (!active) return;
+
+      const resolvedEntries = loaded.filter(([, result]) => result !== null) as Array<readonly [string, ActivityQuoteState]>;
+      if (resolvedEntries.length === 0) return;
+
+      setActivityQuotes((prev) => ({ ...prev, ...Object.fromEntries(resolvedEntries) }));
+    };
+
+    void loadQuotes();
+    return () => {
+      active = false;
+    };
+  }, [activityQuotes, myActivities]);
 
   const analysisStats = useMemo(() => {
     if (analysisTrades.length === 0) return null;
@@ -563,6 +634,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           entryPrice: eventPrice,
           shareAmount: shouldUseSourceShares ? eventSize : undefined,
           side: eventSide,
+          marketSlug: event.market_slug ?? undefined,
           market: event.market ?? undefined,
           outcome: event.outcome ?? undefined,
         });
@@ -993,7 +1065,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           <p className="text-[10px] text-muted-foreground">{activity.side} • {formatDate(activity.occurredAt)}</p>
                         </div>
                       </div>
-                      <p className="text-xs text-foreground text-right">Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}</p>
+                      <p className="text-xs text-foreground text-right">
+                        {activityQuotes[activity.id]
+                          ? `Fark: ${formatSignedPrice(activityQuotes[activity.id].diffPrice)} • Canlı ${activityQuotes[activity.id].benchmarkLabel}: ${formatPrice(activityQuotes[activity.id].benchmarkPrice)} • `
+                          : ''}
+                        Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}
+                      </p>
                     </div>
                   ))}
                   {myActivities.length > visibleActivityCount && (
