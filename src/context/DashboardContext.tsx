@@ -42,6 +42,7 @@ export interface PaperTrade {
   spentUsd?: number;
   side?: 'BUY' | 'SELL';
   market?: string;
+  marketSlug?: string;
   outcome?: string;
 }
 
@@ -63,6 +64,7 @@ interface StartPaperTradeInput {
   shareAmount?: number;
   side?: 'BUY' | 'SELL';
   market?: string;
+  marketSlug?: string;
   outcome?: string;
 }
 
@@ -215,6 +217,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       spentUsd: spendUsd,
       side: input.side,
       market: input.market,
+      marketSlug: input.marketSlug,
       outcome: input.outcome,
     };
     setPaperTrades(prev => [...prev, trade]);

@@ -4,12 +4,24 @@ export type WalletTrackerEvent = {
   type?: string | null;
   side?: string | null;
   market?: string | null;
+  market_slug?: string | null;
   outcome?: string | null;
+  asset_id?: string | null;
   price?: number | null;
   size?: number | null;
   value_usd?: number | null;
   tx_hash?: string | null;
   raw_source: 'activity' | 'trades';
+};
+
+export type MarketQuote = {
+  market: string;
+  outcome: string;
+  assetId: string;
+  bid: number | null;
+  ask: number | null;
+  bidCents: number | null;
+  askCents: number | null;
 };
 
 export type WalletTrackerInfo = {
@@ -127,4 +139,17 @@ export async function requestCopytradeAdvisor(context: string): Promise<Copytrad
   }
 
   return response.json() as Promise<CopytradeAdvisorResponse>;
+}
+
+export async function getMarketQuote(market: string, outcome: string): Promise<MarketQuote> {
+  const response = await fetch(`/api/tracker/quote?market=${encodeURIComponent(market)}&outcome=${encodeURIComponent(outcome)}`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Quote alınamadı');
+  }
+
+  return response.json() as Promise<MarketQuote>;
 }
