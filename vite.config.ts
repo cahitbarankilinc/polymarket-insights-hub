@@ -7,7 +7,7 @@ import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
 const POLL_INTERVAL_MS = 1000;
-const MAX_EVENTS = 200;
+const MAX_EVENTS = 5000;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");

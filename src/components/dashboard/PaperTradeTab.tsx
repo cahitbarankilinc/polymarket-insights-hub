@@ -49,6 +49,7 @@ const defaultConfig: WalletModeConfig = {
 
 const formatUsd = (value: number) => `$${value.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}`;
 const formatDate = (value: Date) => value.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const MAX_TRADES_FOR_CHART = 100;
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
   if (!value) return undefined;
@@ -389,8 +390,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   }, [analysisTrades, myActivities.length, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type]);
 
   const sharePriceData = useMemo(() => {
+    const recentTrades = [...analysisTrades]
+      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+      .slice(0, MAX_TRADES_FOR_CHART);
+
     const grouped = new Map<number, { share: number; usdSpent: number }>();
-    for (const trade of analysisTrades) {
+    for (const trade of recentTrades) {
       const bucket = Number(trade.entryPrice.toFixed(2));
       const row = grouped.get(bucket) || { share: 0, usdSpent: 0 };
       row.share += trade.amount;
