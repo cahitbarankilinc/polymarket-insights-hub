@@ -29,6 +29,32 @@ const resolveDirection = (event: WalletTrackerEvent | undefined): 'long' | 'shor
   if (side === 'buy') return 'long';
   return undefined;
 };
+
+const toEventTimestampMs = (event: WalletTrackerEvent | null | undefined): number | null => {
+  if (!event) return null;
+  const rawDate = event.event_time ?? event.seen_at_utc;
+  if (!rawDate) return null;
+  const parsed = Date.parse(rawDate);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatLastActivity = (event: WalletTrackerEvent | null | undefined): string => {
+  const timestamp = toEventTimestampMs(event);
+  if (timestamp === null) return '—';
+
+  const diffMs = Math.max(0, Date.now() - timestamp);
+  const hourMs = 1000 * 60 * 60;
+  const dayMs = hourMs * 24;
+
+  if (diffMs < hourMs) return '0 saat önce';
+  if (diffMs < dayMs) return `${Math.floor(diffMs / hourMs)} saat önce`;
+  return `${Math.floor(diffMs / dayMs)} gün önce`;
+};
+
+const formatPnl = (pnl?: number): string => {
+  if (typeof pnl !== 'number' || Number.isNaN(pnl)) return '—';
+  return `${pnl >= 0 ? '+' : ''}${pnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+};
 export interface PaperTradePrefill {
   sourceTradeUsd?: number;
   sharePrice?: number;
@@ -47,7 +73,9 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
-    const matchSearch = !searchQuery || a.address.toLowerCase().includes(searchQuery.toLowerCase());
+    const search = searchQuery.toLowerCase();
+    const walletName = (a.username || a.label || '').toLowerCase();
+    const matchSearch = !searchQuery || a.address.toLowerCase().includes(search) || walletName.includes(search);
     return matchCat && matchSearch;
   });
 
@@ -181,54 +209,56 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         </div>
 
         {/* Address List */}
-        <div className="space-y-2">
+        <div className="glass-card overflow-x-auto">
           {filtered.length === 0 && (
-            <div className="glass-card p-8 text-center text-muted-foreground text-sm">
+            <div className="p-8 text-center text-muted-foreground text-sm">
               Henüz takip edilen adres yok
             </div>
           )}
-          {filtered.map((addr) => (
-            <div
-              key={addr.id}
-              className="glass-card-hover p-4 group cursor-pointer"
-              onClick={() => setAnalysisAddress(addr.id)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    {addr.label && (
-                      <span className="text-sm font-semibold text-foreground">{addr.label}</span>
-                    )}
-                    <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
-                      {addr.category}
-                    </span>
-                  </div>
-                  <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
-                  <p className="text-[10px] text-muted-foreground/60 mt-1">
-                    Eklendi: {addr.addedAt.toLocaleDateString('tr-TR')}
-                  </p>
-                  {addr.note && (
-                    <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">
-                      Not: {addr.note}
-                    </p>
-                  )}
-                  {trackerMap[addr.address.toLowerCase()] && (
-                    <p className="text-[10px] text-emerald-400/90 mt-1">
-                      {trackerMap[addr.address.toLowerCase()].isActive ? 'Takip aktif' : 'Takip pasif'} •
-                      {' '}Toplam event: {trackerMap[addr.address.toLowerCase()].eventCount}
-                    </p>
-                  )}
-                  {eventsMap[addr.address.toLowerCase()]?.length ? (
-                    <div className="mt-2 space-y-1">
-                      {eventsMap[addr.address.toLowerCase()].map((event, index) => (
-                        <p key={`${event.tx_hash ?? index}-${event.seen_at_utc}`} className="text-[10px] text-muted-foreground/80 truncate">
-                          [{event.raw_source}] {(event.side ?? event.type ?? 'EVENT').toUpperCase()} • {event.market ?? 'Unknown market'}
-                        </p>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {filtered.length > 0 && (
+            <table className="w-full min-w-[760px]">
+              <thead>
+                <tr className="border-b border-border/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3 font-medium">Wallet</th>
+                  <th className="px-4 py-3 font-medium">PNL</th>
+                  <th className="px-4 py-3 font-medium">Toplam Event</th>
+                  <th className="px-4 py-3 font-medium">Son Aktivite</th>
+                  <th className="px-4 py-3 font-medium text-right">İşlemler</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((addr) => {
+                  const tracker = trackerMap[addr.address.toLowerCase()];
+                  const fallbackLatestEvent = eventsMap[addr.address.toLowerCase()]?.[0];
+                  const latestEvent = tracker?.latestEvent || fallbackLatestEvent;
+
+                  return (
+                    <tr
+                      key={addr.id}
+                      className="group border-b border-border/20 last:border-b-0 hover:bg-secondary/20 transition-colors"
+                    >
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => setAnalysisAddress(addr.id)}
+                          className="text-left"
+                        >
+                          <p className="text-sm font-semibold text-foreground">
+                            {addr.username || addr.label || `${addr.address.slice(0, 6)}...${addr.address.slice(-4)}`}
+                          </p>
+                          <p className="font-mono text-xs text-muted-foreground truncate max-w-[300px]">{addr.address}</p>
+                        </button>
+                      </td>
+                      <td className={`px-4 py-3 text-sm font-medium ${typeof addr.pnl === 'number' && addr.pnl < 0 ? 'text-destructive' : 'text-emerald-400'}`}>
+                        {formatPnl(addr.pnl)}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground">
+                        {tracker?.eventCount ?? eventsMap[addr.address.toLowerCase()]?.length ?? 0}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">
+                        {formatLastActivity(latestEvent)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -242,7 +272,6 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      const latestEvent = trackerMap[addr.address.toLowerCase()]?.latestEvent || eventsMap[addr.address.toLowerCase()]?.[0];
                       onPaperTrade(addr.id, {
                         sourceTradeUsd: latestEvent?.value_usd ?? undefined,
                         sharePrice: latestEvent?.price ?? undefined,
@@ -269,9 +298,13 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                   </button>
                   <ChevronRight className="w-4 h-4 text-muted-foreground/40 ml-1" />
                 </div>
-              </div>
-            </div>
-          ))}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>
