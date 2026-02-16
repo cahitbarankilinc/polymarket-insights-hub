@@ -30,6 +30,7 @@ interface WalletModeConfig {
   buyWaitLimit: string;
   fixedShares: string;
   sharePrice: string;
+  slippageCents: string;
   strategy: string;
   direction: 'long' | 'short';
 }
@@ -43,6 +44,7 @@ const defaultConfig: WalletModeConfig = {
   buyWaitLimit: '2',
   fixedShares: '50',
   sharePrice: '1',
+  slippageCents: '1',
   strategy: 'Copy Trading',
   direction: 'long',
 };
@@ -160,6 +162,12 @@ const formatPrice = (value: number) => value.toLocaleString('tr-TR', { maximumFr
 
 const formatSignedPrice = (value: number) => `${value > 0 ? '+' : ''}${value.toLocaleString('tr-TR', { maximumFractionDigits: 4 })}`;
 
+const parseSlippageCents = (value: string | undefined): number => {
+  const parsed = Number.parseFloat(value ?? '');
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+};
+
 const toEventTimestamp = (event: WalletTrackerEvent): number => {
   const candidates = [event.event_time, event.seen_at_utc];
 
@@ -232,39 +240,55 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
   const copySessionsRef = useRef(copySessions);
+  const walletConfigsRef = useRef(walletConfigs);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     copySessionsRef.current = copySessions;
   }, [copySessions]);
 
+  useEffect(() => {
+    walletConfigsRef.current = walletConfigs;
+  }, [walletConfigs]);
+
   const loadAutoConfig = async (addressId: string): Promise<WalletModeConfig | null> => {
     const targetAddress = addresses.find((address) => address.id === addressId);
     if (!targetAddress) return null;
 
-    const baseConfig = walletConfigs[addressId] || defaultConfig;
+    const snapshotBaseConfig = walletConfigsRef.current[addressId] || defaultConfig;
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
       const latestEvent = getLatestEvent(payload.events);
-      const nextConfig: WalletModeConfig = {
-        ...baseConfig,
-        sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
-        sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
-        fixedShares: String(latestEvent?.size ?? baseConfig.fixedShares),
-        direction: resolveDirection(latestEvent) ?? baseConfig.direction,
-        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
-      };
+      let resolvedConfig: WalletModeConfig = snapshotBaseConfig;
 
-      setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
-      return nextConfig;
+      setWalletConfigs((prev) => {
+        const liveBaseConfig = prev[addressId] || snapshotBaseConfig;
+        const nextConfig: WalletModeConfig = {
+          ...liveBaseConfig,
+          sourceTradeUsd: String(latestEvent?.value_usd ?? liveBaseConfig.sourceTradeUsd),
+          sharePrice: String(latestEvent?.price ?? liveBaseConfig.sharePrice),
+          fixedShares: String(latestEvent?.size ?? liveBaseConfig.fixedShares),
+          direction: resolveDirection(latestEvent) ?? liveBaseConfig.direction,
+          leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? liveBaseConfig.leaderFreeBalance),
+        };
+        resolvedConfig = nextConfig;
+        return { ...prev, [addressId]: nextConfig };
+      });
+
+      return resolvedConfig;
     } catch {
-      const nextConfig: WalletModeConfig = {
-        ...baseConfig,
-        leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? baseConfig.leaderFreeBalance),
-      };
-      setWalletConfigs((prev) => ({ ...prev, [addressId]: nextConfig }));
-      return nextConfig;
+      let resolvedConfig: WalletModeConfig = snapshotBaseConfig;
+      setWalletConfigs((prev) => {
+        const liveBaseConfig = prev[addressId] || snapshotBaseConfig;
+        const nextConfig: WalletModeConfig = {
+          ...liveBaseConfig,
+          leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? liveBaseConfig.leaderFreeBalance),
+        };
+        resolvedConfig = nextConfig;
+        return { ...prev, [addressId]: nextConfig };
+      });
+      return resolvedConfig;
     }
   };
 
@@ -357,6 +381,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     const wallet = addresses.find((addr) => addr.id === analysisAddressId);
     return wallet?.username || wallet?.label || wallet?.address || '';
   }, [addresses, analysisAddressId]);
+
+  const analysisSlippageCents = useMemo(() => {
+    if (!analysisAddressId) return parseSlippageCents(defaultConfig.slippageCents);
+    return parseSlippageCents(walletConfigs[analysisAddressId]?.slippageCents ?? defaultConfig.slippageCents);
+  }, [analysisAddressId, walletConfigs]);
 
   useEffect(() => {
     setVisibleActivityCount(20);
@@ -455,6 +484,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     const totalBuy = analysisTrades.reduce((sum, trade) => sum + trade.buyUsd, 0);
     const totalSell = analysisTrades.reduce((sum, trade) => sum + trade.sellUsd, 0);
     const inGameMoney = analysisTrades.filter((trade) => trade.status === 'active').reduce((sum, trade) => sum + trade.buyUsd, 0);
+    const slippageThreshold = analysisSlippageCents / 100;
+    const successfulTrades = myActivities.reduce((count, activity) => {
+      const quote = activityQuotes[activity.id];
+      if (!quote) return count;
+      return Math.abs(quote.diffPrice) <= slippageThreshold ? count + 1 : count;
+    }, 0);
+    const successRate = myActivities.length > 0 ? (successfulTrades / myActivities.length) * 100 : 0;
 
 
     return {
@@ -463,10 +499,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       freeBudgetText: paperBudget.mode === 'limited' ? formatUsd(paperBudget.remaining) : 'Sınırsız',
       inGameMoney,
       totalTransactions: myActivities.length,
+      successfulTrades,
+      successRate,
       totalBuy,
       totalSell,
     };
-  }, [analysisTrades, myActivities.length, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type]);
+  }, [activityQuotes, analysisSlippageCents, analysisTrades, myActivities, paperBudget.amount, paperBudget.mode, paperBudget.remaining, paperBudget.type]);
 
   const sharePriceData = useMemo(() => {
     const recentTrades = [...analysisTrades]
@@ -903,7 +941,30 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         </label>
                       </>
                     )}
-                    <input type="text" value={currentConfig.strategy} onChange={(e) => setConfig({ strategy: e.target.value })} className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm" placeholder="Strateji" />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Trade Stratejisi</span>
+                        <input
+                          type="text"
+                          value={currentConfig.strategy}
+                          onChange={(e) => setConfig({ strategy: e.target.value })}
+                          className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                          placeholder="Strateji"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">slippageCents (Cüzdana özel)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={currentConfig.slippageCents}
+                          onChange={(e) => setConfig({ slippageCents: e.target.value })}
+                          className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                          placeholder="Örn: 1"
+                        />
+                      </label>
+                    </div>
                     <p className="text-xs text-muted-foreground">Hesaplanan trade tutarı: <span className="font-mono text-foreground">${calculateTradeUsd(currentConfig, resolveBudgetDraft()).toFixed(2)}</span></p>
                   </div>
                 )}
@@ -1031,6 +1092,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                   { label: 'SERBEST PARA', value: analysisStats.freeBudgetText },
                   { label: 'OYUNDAKİ PARA', value: formatUsd(analysisStats.inGameMoney) },
                   { label: 'TOPLAM İŞLEM', value: String(analysisStats.totalTransactions) },
+                  { label: 'BAŞARI ORANI', value: `%${analysisStats.successRate.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} (${analysisStats.successfulTrades}/${analysisStats.totalTransactions})` },
                   { label: 'TOTAL BUY', value: formatUsd(analysisStats.totalBuy) },
                   { label: 'TOTAL SELL', value: formatUsd(analysisStats.totalSell) },
                 ].map((stat) => (
@@ -1067,7 +1129,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       </div>
                       <p className="text-xs text-foreground text-right">
                         {activityQuotes[activity.id]
-                          ? `Fark: ${formatSignedPrice(activityQuotes[activity.id].diffPrice)} • Canlı ${activityQuotes[activity.id].benchmarkLabel}: ${formatPrice(activityQuotes[activity.id].benchmarkPrice)} • `
+                          ? `Fark: ${Math.abs(activityQuotes[activity.id].diffPrice) <= (analysisSlippageCents / 100) ? '✅ ' : '❌ '}${formatSignedPrice(activityQuotes[activity.id].diffPrice)} • Canlı ${activityQuotes[activity.id].benchmarkLabel}: ${formatPrice(activityQuotes[activity.id].benchmarkPrice)} • `
                           : ''}
                         Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}
                       </p>
