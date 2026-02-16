@@ -147,6 +147,15 @@ interface CopySessionState {
   marketBuyCounts?: Record<string, number>;
 }
 
+interface TrackingHistoryItem {
+  id: string;
+  addressId: string;
+  walletName: string;
+  walletAddress?: string;
+  strategy: string;
+  stoppedAt: Date;
+}
+
 const resolveMarketKey = (event: WalletTrackerEvent): string | null => {
   const market = typeof event.market === 'string' ? event.market.trim().toLowerCase() : '';
   return market || null;
@@ -237,8 +246,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [copySessionErrors, setCopySessionErrors] = useState<Record<string, string | null>>({});
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
+  const [analysisStrategy, setAnalysisStrategy] = useState<string | null>(null);
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
+  const [trackingHistory, setTrackingHistory] = useState<TrackingHistoryItem[]>([]);
   const copySessionsRef = useRef(copySessions);
   const walletConfigsRef = useRef(walletConfigs);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
@@ -356,24 +367,31 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     .filter(([, session]) => session.status !== 'idle')
     .map(([addressId, session]) => {
       const wallet = addresses.find((addr) => addr.id === addressId);
+      const strategy = walletConfigs[addressId]?.strategy || defaultConfig.strategy;
       return {
         addressId,
         session,
+        strategy,
         walletName: wallet?.username || wallet?.label || wallet?.address || addressId,
         walletAddress: wallet?.address,
       };
-    }), [addresses, copySessions]);
+    }), [addresses, copySessions, walletConfigs]);
   const passiveSessions = useMemo(() => addresses
     .filter((wallet) => copySessions[wallet.id]?.status !== 'running' && copySessions[wallet.id]?.status !== 'syncing')
     .map((wallet) => ({
       addressId: wallet.id,
+      strategy: walletConfigs[wallet.id]?.strategy || defaultConfig.strategy,
       walletName: wallet.username || wallet.label || wallet.address || wallet.id,
       walletAddress: wallet.address,
-    })), [addresses, copySessions]);
+    })), [addresses, copySessions, walletConfigs]);
 
   const analysisTrades = useMemo(
-    () => tradesWithAddress.filter((trade) => trade.addressId === analysisAddressId),
-    [analysisAddressId, tradesWithAddress],
+    () => tradesWithAddress.filter((trade) => {
+      if (trade.addressId !== analysisAddressId) return false;
+      if (!analysisStrategy) return true;
+      return trade.strategy === analysisStrategy;
+    }),
+    [analysisAddressId, analysisStrategy, tradesWithAddress],
   );
 
   const analysisWalletName = useMemo(() => {
@@ -795,6 +813,20 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   };
 
   const handleStop = (addressId: string) => {
+    const currentSession = copySessionsRef.current[addressId];
+    if (currentSession?.status === 'running' || currentSession?.status === 'syncing') {
+      const wallet = addresses.find((address) => address.id === addressId);
+      const strategy = walletConfigsRef.current[addressId]?.strategy || defaultConfig.strategy;
+      setTrackingHistory((prev) => [{
+        id: `${addressId}-${Date.now()}`,
+        addressId,
+        walletName: wallet?.username || wallet?.label || wallet?.address || addressId,
+        walletAddress: wallet?.address,
+        strategy,
+        stoppedAt: new Date(),
+      }, ...prev]);
+    }
+
     setCopySessions((prev) => ({
       ...prev,
       [addressId]: {
@@ -806,8 +838,9 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     toast.success('Copy trade takibi durduruldu');
   };
 
-  const openAnalysis = (addressId: string) => {
+  const openAnalysis = (addressId: string, strategy?: string) => {
     setAnalysisAddressId(addressId);
+    setAnalysisStrategy(strategy || null);
     setView('analysis');
   };
 
@@ -985,14 +1018,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             <div className="mb-6">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
               <div className="space-y-2">
-                {runningSessions.map(({ addressId, session, walletName, walletAddress }) => {
+                {runningSessions.map(({ addressId, session, strategy, walletName, walletAddress }) => {
                   const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
                   const statusLabel = session.status === 'syncing' ? 'SENKRONİZE EDİLİYOR' : 'TAKİP AKTİF';
                   return (
                     <div key={addressId} className="glass-card p-4 border border-primary/20">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <p className="text-xs font-semibold text-foreground">{walletName}</p>
+                          <p className="text-xs font-semibold text-foreground">{walletName} <span className="text-muted-foreground">• {strategy}</span></p>
                           <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan takip ediliyor. Yeni aktivite geldiğinde trade otomatik oluşacak.</p>
                           {copySessionErrors[addressId] && (
@@ -1024,13 +1057,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <div className="glass-card p-6 text-center text-muted-foreground text-sm">Takip edilmeyen cüzdan yok</div>
             ) : (
               <div className="space-y-2">
-                {passiveSessions.map(({ addressId, walletName, walletAddress }) => {
+                {passiveSessions.map(({ addressId, strategy, walletName, walletAddress }) => {
                   const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
                   return (
                     <div key={addressId} className="glass-card p-4 border border-border/30">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <p className="text-xs font-semibold text-foreground">{walletName}</p>
+                          <p className="text-xs font-semibold text-foreground">{walletName} <span className="text-muted-foreground">• {strategy}</span></p>
                           <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan şu an takip edilmiyor. Takibi başlatmadan yeni trade otomatik oluşmaz.</p>
                         </div>
@@ -1049,6 +1082,34 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+
+          <div className="mb-6">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Geçmiş Takipler ({trackingHistory.length})</h3>
+            {trackingHistory.length === 0 ? (
+              <div className="glass-card p-6 text-center text-muted-foreground text-sm">Durdurulan takip bulunmuyor</div>
+            ) : (
+              <div className="space-y-2">
+                {trackingHistory.map((historyItem) => (
+                  <div key={historyItem.id} className="glass-card p-4 border border-border/30">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-semibold text-foreground">{historyItem.walletName} <span className="text-muted-foreground">• {historyItem.strategy}</span></p>
+                        <p className="font-mono text-[10px] text-muted-foreground truncate">{historyItem.walletAddress || historyItem.addressId}</p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">Durdurma zamanı: {formatDate(historyItem.stoppedAt)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy)}
+                        className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
+                      >
+                        Strateji Geçmişini Aç
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1085,6 +1146,9 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           ) : (
             <>
               <h3 className="text-sm font-semibold text-foreground mb-3">Copy Trade Analizi • {analysisWalletName}</h3>
+              {analysisStrategy && (
+                <p className="mb-3 text-xs text-muted-foreground">Filtrelenen trade stratejisi: <span className="font-semibold text-foreground">{analysisStrategy}</span></p>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                 {[
                   { label: 'TRADE BAŞLANGIÇ', value: formatDate(analysisStats.startAt) },
