@@ -142,6 +142,9 @@ interface ActivityQuoteState {
 }
 
 interface CopySessionState {
+  addressId: string;
+  strategy: string;
+  startedAt: Date;
   status: 'idle' | 'running' | 'syncing';
   lastEventKey?: string;
   marketBuyCounts?: Record<string, number>;
@@ -150,6 +153,7 @@ interface CopySessionState {
 interface TrackingHistoryItem {
   id: string;
   addressId: string;
+  startedAt: Date;
   walletName: string;
   walletAddress?: string;
   strategy: string;
@@ -176,6 +180,13 @@ const parseSlippageCents = (value: string | undefined): number => {
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return parsed;
 };
+
+const normalizeStrategyName = (value: string | undefined): string => {
+  const trimmed = (value ?? '').trim();
+  return trimmed || defaultConfig.strategy;
+};
+
+const buildSessionKey = (addressId: string, strategy: string): string => `${addressId}::${normalizeStrategyName(strategy)}`;
 
 const toEventTimestamp = (event: WalletTrackerEvent): number => {
   const candidates = [event.event_time, event.seen_at_utc];
@@ -236,6 +247,7 @@ const getEventKey = (event: WalletTrackerEvent): string => (
 export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
   const { addresses, paperTrades, startPaperTrade, paperBudget, setPaperBudget } = useDashboard();
   const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
+  const [setupStrategy, setSetupStrategy] = useState(defaultConfig.strategy);
   const [collapsed, setCollapsed] = useState(false);
   const [budgetMode, setBudgetMode] = useState<'unlimited' | 'limited'>(paperBudget.mode);
   const [budgetType, setBudgetType] = useState<'daily' | 'total'>(paperBudget.type);
@@ -247,12 +259,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
   const [analysisStrategy, setAnalysisStrategy] = useState<string | null>(null);
+  const [analysisStartedAt, setAnalysisStartedAt] = useState<Date | null>(null);
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
   const [trackingHistory, setTrackingHistory] = useState<TrackingHistoryItem[]>([]);
   const copySessionsRef = useRef(copySessions);
   const walletConfigsRef = useRef(walletConfigs);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
+  const activeConfigKey = setupId ? buildSessionKey(setupId, setupStrategy) : null;
 
   useEffect(() => {
     copySessionsRef.current = copySessions;
@@ -262,11 +276,12 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     walletConfigsRef.current = walletConfigs;
   }, [walletConfigs]);
 
-  const loadAutoConfig = async (addressId: string): Promise<WalletModeConfig | null> => {
+  const loadAutoConfig = async (addressId: string, strategy: string): Promise<WalletModeConfig | null> => {
     const targetAddress = addresses.find((address) => address.id === addressId);
     if (!targetAddress) return null;
 
-    const snapshotBaseConfig = walletConfigsRef.current[addressId] || defaultConfig;
+    const sessionKey = buildSessionKey(addressId, strategy);
+    const snapshotBaseConfig = walletConfigsRef.current[sessionKey] || { ...defaultConfig, strategy: normalizeStrategyName(strategy) };
 
     try {
       const payload = await getWalletEventsWithStats(targetAddress.address);
@@ -274,7 +289,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       let resolvedConfig: WalletModeConfig = snapshotBaseConfig;
 
       setWalletConfigs((prev) => {
-        const liveBaseConfig = prev[addressId] || snapshotBaseConfig;
+        const liveBaseConfig = prev[sessionKey] || snapshotBaseConfig;
         const nextConfig: WalletModeConfig = {
           ...liveBaseConfig,
           sourceTradeUsd: String(latestEvent?.value_usd ?? liveBaseConfig.sourceTradeUsd),
@@ -284,20 +299,20 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? liveBaseConfig.leaderFreeBalance),
         };
         resolvedConfig = nextConfig;
-        return { ...prev, [addressId]: nextConfig };
+        return { ...prev, [sessionKey]: nextConfig };
       });
 
       return resolvedConfig;
     } catch {
       let resolvedConfig: WalletModeConfig = snapshotBaseConfig;
       setWalletConfigs((prev) => {
-        const liveBaseConfig = prev[addressId] || snapshotBaseConfig;
+        const liveBaseConfig = prev[sessionKey] || snapshotBaseConfig;
         const nextConfig: WalletModeConfig = {
           ...liveBaseConfig,
           leaderFreeBalance: String(resolveLeaderFreeBalance(targetAddress.polygonscanTopTotalValText) ?? liveBaseConfig.leaderFreeBalance),
         };
         resolvedConfig = nextConfig;
-        return { ...prev, [addressId]: nextConfig };
+        return { ...prev, [sessionKey]: nextConfig };
       });
       return resolvedConfig;
     }
@@ -306,6 +321,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   useEffect(() => {
     if (preselectedId) {
       setSetupId(preselectedId);
+      setSetupStrategy(defaultConfig.strategy);
       setCollapsed(false);
       setView('paper');
     }
@@ -322,16 +338,17 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     if (prefill.direction) patch.direction = prefill.direction;
 
     if (Object.keys(patch).length) {
-      setWalletConfigs(prev => ({ ...prev, [setupId]: { ...(prev[setupId] || defaultConfig), ...patch } }));
+      const sessionKey = buildSessionKey(setupId, setupStrategy);
+      setWalletConfigs(prev => ({ ...prev, [sessionKey]: { ...(prev[sessionKey] || { ...defaultConfig, strategy: normalizeStrategyName(setupStrategy) }), ...patch } }));
     }
-  }, [setupId, prefill]);
+  }, [setupId, setupStrategy, prefill]);
 
   useEffect(() => {
     if (!setupId) return;
-    loadAutoConfig(setupId);
+    loadAutoConfig(setupId, setupStrategy);
   }, [setupId, addresses]);
 
-  const currentConfig = setupId ? (walletConfigs[setupId] || defaultConfig) : defaultConfig;
+  const currentConfig = activeConfigKey ? (walletConfigs[activeConfigKey] || { ...defaultConfig, strategy: normalizeStrategyName(setupStrategy) }) : defaultConfig;
 
   useEffect(() => {
     if (currentConfig.mode !== 'proportional') return;
@@ -363,35 +380,47 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
   const activeTrades = tradesWithAddress.filter(t => t.status === 'active');
   const closedTrades = tradesWithAddress.filter(t => t.status === 'closed');
+
+  const getSessionActiveTradeCount = useCallback((addressId: string, strategy: string, startedAt: Date) => (
+    activeTrades.filter((trade) => {
+      if (trade.addressId !== addressId) return false;
+      if (trade.strategy !== strategy) return false;
+      return new Date(trade.startedAt).getTime() >= startedAt.getTime();
+    }).length
+  ), [activeTrades]);
   const runningSessions = useMemo(() => Object.entries(copySessions)
     .filter(([, session]) => session.status !== 'idle')
-    .map(([addressId, session]) => {
-      const wallet = addresses.find((addr) => addr.id === addressId);
-      const strategy = walletConfigs[addressId]?.strategy || defaultConfig.strategy;
+    .map(([sessionKey, session]) => {
+      const wallet = addresses.find((addr) => addr.id === session.addressId);
       return {
-        addressId,
+        sessionKey,
+        addressId: session.addressId,
         session,
-        strategy,
-        walletName: wallet?.username || wallet?.label || wallet?.address || addressId,
+        strategy: session.strategy,
+        startedAt: session.startedAt,
+        walletName: wallet?.username || wallet?.label || wallet?.address || session.addressId,
         walletAddress: wallet?.address,
       };
-    }), [addresses, copySessions, walletConfigs]);
+    }), [addresses, copySessions]);
   const passiveSessions = useMemo(() => addresses
-    .filter((wallet) => copySessions[wallet.id]?.status !== 'running' && copySessions[wallet.id]?.status !== 'syncing')
+    .filter((wallet) => !Object.values(copySessions).some((session) => (
+      session.addressId === wallet.id && (session.status === 'running' || session.status === 'syncing')
+    )))
     .map((wallet) => ({
       addressId: wallet.id,
-      strategy: walletConfigs[wallet.id]?.strategy || defaultConfig.strategy,
+      strategy: defaultConfig.strategy,
       walletName: wallet.username || wallet.label || wallet.address || wallet.id,
       walletAddress: wallet.address,
-    })), [addresses, copySessions, walletConfigs]);
+    })), [addresses, copySessions]);
 
   const analysisTrades = useMemo(
     () => tradesWithAddress.filter((trade) => {
       if (trade.addressId !== analysisAddressId) return false;
+      if (analysisStartedAt && new Date(trade.startedAt).getTime() < analysisStartedAt.getTime()) return false;
       if (!analysisStrategy) return true;
       return trade.strategy === analysisStrategy;
     }),
-    [analysisAddressId, analysisStrategy, tradesWithAddress],
+    [analysisAddressId, analysisStartedAt, analysisStrategy, tradesWithAddress],
   );
 
   const analysisWalletName = useMemo(() => {
@@ -400,10 +429,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return wallet?.username || wallet?.label || wallet?.address || '';
   }, [addresses, analysisAddressId]);
 
-  const analysisSlippageCents = useMemo(() => {
-    if (!analysisAddressId) return parseSlippageCents(defaultConfig.slippageCents);
-    return parseSlippageCents(walletConfigs[analysisAddressId]?.slippageCents ?? defaultConfig.slippageCents);
-  }, [analysisAddressId, walletConfigs]);
+  const analysisSlippageCents = useMemo(() => parseSlippageCents(defaultConfig.slippageCents), []);
 
   useEffect(() => {
     setVisibleActivityCount(20);
@@ -541,8 +567,14 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   }, [analysisTrades]);
 
   const setConfig = (patch: Partial<WalletModeConfig>) => {
-    if (!setupId) return;
-    setWalletConfigs(prev => ({ ...prev, [setupId]: { ...(prev[setupId] || defaultConfig), ...patch } }));
+    if (!setupId || !activeConfigKey) return;
+    setWalletConfigs(prev => ({
+      ...prev,
+      [activeConfigKey]: {
+        ...(prev[activeConfigKey] || { ...defaultConfig, strategy: normalizeStrategyName(setupStrategy) }),
+        ...patch,
+      },
+    }));
   };
 
   const resolveBudgetDraft = (): BudgetDraft => ({
@@ -587,20 +619,26 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
 
 
-  const syncWalletCopyTrades = useCallback(async (addressId: string) => {
-    if (syncingWalletsRef.current.has(addressId)) return;
-    syncingWalletsRef.current.add(addressId);
+  const syncWalletCopyTrades = useCallback(async (sessionKey: string) => {
+    if (syncingWalletsRef.current.has(sessionKey)) return;
+    syncingWalletsRef.current.add(sessionKey);
 
-    const targetAddress = addresses.find((address) => address.id === addressId);
+    const session = copySessionsRef.current[sessionKey];
+    if (!session) {
+      syncingWalletsRef.current.delete(sessionKey);
+      return;
+    }
+
+    const targetAddress = addresses.find((address) => address.id === session.addressId);
     if (!targetAddress) {
-      syncingWalletsRef.current.delete(addressId);
+      syncingWalletsRef.current.delete(sessionKey);
       return;
     }
 
     setCopySessions((prev) => {
-      const current = prev[addressId];
+      const current = prev[sessionKey];
       if (!current || current.status === 'idle') return prev;
-      return { ...prev, [addressId]: { ...current, status: 'syncing' } };
+      return { ...prev, [sessionKey]: { ...current, status: 'syncing' } };
     });
 
     try {
@@ -609,10 +647,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       const latestEvent = events.at(-1);
 
       setWalletConfigs((prev) => {
-        const baseConfig = prev[addressId] || defaultConfig;
+        const baseConfig = prev[sessionKey] || { ...defaultConfig, strategy: session.strategy };
         return {
           ...prev,
-          [addressId]: {
+          [sessionKey]: {
             ...baseConfig,
             sourceTradeUsd: String(latestEvent?.value_usd ?? baseConfig.sourceTradeUsd),
             sharePrice: String(latestEvent?.price ?? baseConfig.sharePrice),
@@ -623,35 +661,34 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         };
       });
 
-      const session = copySessionsRef.current[addressId];
-      if (!session || session.status === 'idle') return;
+      const liveSession = copySessionsRef.current[sessionKey];
+      if (!liveSession || liveSession.status === 'idle') return;
       if (!events.length) {
-        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running' } }));
+        setCopySessions((prev) => ({ ...prev, [sessionKey]: { ...prev[sessionKey], status: 'running' } }));
         return;
       }
 
       const latestEventKey = getEventKey(events[events.length - 1]);
-      if (!session.lastEventKey) {
-        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
+      if (!liveSession.lastEventKey) {
+        setCopySessions((prev) => ({ ...prev, [sessionKey]: { ...prev[sessionKey], status: 'running', lastEventKey: latestEventKey } }));
         return;
       }
 
-      const seenIndex = events.findIndex((event) => getEventKey(event) === session.lastEventKey);
+      const seenIndex = events.findIndex((event) => getEventKey(event) === liveSession.lastEventKey);
       const freshEvents = seenIndex === -1 ? events : events.slice(seenIndex + 1);
 
       if (freshEvents.length === 0) {
-        setCopySessions((prev) => ({ ...prev, [addressId]: { ...prev[addressId], status: 'running', lastEventKey: latestEventKey } }));
+        setCopySessions((prev) => ({ ...prev, [sessionKey]: { ...prev[sessionKey], status: 'running', lastEventKey: latestEventKey } }));
         return;
       }
 
-      const cfg = walletConfigs[addressId] || defaultConfig;
+      const cfg = walletConfigsRef.current[sessionKey] || { ...defaultConfig, strategy: liveSession.strategy };
       let openedTrades = 0;
-      const nextMarketBuyCounts: Record<string, number> = { ...(session.marketBuyCounts || {}) };
+      const nextMarketBuyCounts: Record<string, number> = { ...(liveSession.marketBuyCounts || {}) };
 
       for (const event of freshEvents) {
         const eventSide = resolveEventSide(event);
         if (!eventSide) continue;
-
         if (cfg.mode === 'buy-wait' && eventSide !== 'BUY') continue;
 
         const eventPrice = toPositiveNumber(event.price);
@@ -665,6 +702,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           sharePrice: String(eventPrice),
           fixedShares: String(eventSize),
           direction: resolveDirection(event) ?? cfg.direction,
+          strategy: normalizeStrategyName(cfg.strategy),
         };
         const tradeUsd = calculateTradeUsd(eventConfig);
         if (tradeUsd <= 0) continue;
@@ -672,23 +710,19 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         if (eventConfig.mode === 'buy-wait') {
           const buyLimit = Math.floor(parseFloat(eventConfig.buyWaitLimit) || 0);
           if (buyLimit <= 0) continue;
-
           const marketKey = resolveMarketKey(event);
           if (!marketKey) continue;
-
           const copiedCount = nextMarketBuyCounts[marketKey] || 0;
           if (copiedCount >= buyLimit) continue;
         }
 
-        const shouldUseSourceShares = eventConfig.mode === 'notional';
-
-        const result = startPaperTrade(addressId, {
-          strategy: eventConfig.strategy || 'Copy Trading',
+        const result = startPaperTrade(session.addressId, {
+          strategy: eventConfig.strategy,
           direction: eventSide === 'BUY' ? 'long' : 'short',
           spendUsd: tradeUsd,
           copyMode: eventConfig.mode,
           entryPrice: eventPrice,
-          shareAmount: shouldUseSourceShares ? eventSize : undefined,
+          shareAmount: eventConfig.mode === 'notional' ? eventSize : undefined,
           side: eventSide,
           marketSlug: event.market_slug ?? undefined,
           market: event.market ?? undefined,
@@ -699,41 +733,36 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
           openedTrades += 1;
           if (eventConfig.mode === 'buy-wait') {
             const marketKey = resolveMarketKey(event);
-            if (marketKey) {
-              nextMarketBuyCounts[marketKey] = (nextMarketBuyCounts[marketKey] || 0) + 1;
-            }
+            if (marketKey) nextMarketBuyCounts[marketKey] = (nextMarketBuyCounts[marketKey] || 0) + 1;
           }
         }
       }
 
       setCopySessions((prev) => ({
         ...prev,
-        [addressId]: {
-          ...prev[addressId],
+        [sessionKey]: {
+          ...prev[sessionKey],
           status: 'running',
           lastEventKey: latestEventKey,
           marketBuyCounts: nextMarketBuyCounts,
         },
       }));
 
-      setCopySessionErrors((prev) => ({ ...prev, [addressId]: null }));
-
-      if (openedTrades > 0) {
-        toast.success(`${openedTrades} yeni aktivite kopyalandı`);
-      }
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: null }));
+      if (openedTrades > 0) toast.success(`${openedTrades} yeni aktivite kopyalandı`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Copy trade senkronizasyonu sırasında hata oluştu';
-      setCopySessionErrors((prev) => ({ ...prev, [addressId]: message }));
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: message }));
       toast.error(message);
       setCopySessions((prev) => {
-        const current = prev[addressId];
+        const current = prev[sessionKey];
         if (!current || current.status === 'idle') return prev;
-        return { ...prev, [addressId]: { ...current, status: 'running' } };
+        return { ...prev, [sessionKey]: { ...current, status: 'running' } };
       });
     } finally {
-      syncingWalletsRef.current.delete(addressId);
+      syncingWalletsRef.current.delete(sessionKey);
     }
-  }, [addresses, calculateTradeUsd, startPaperTrade, walletConfigs]);
+  }, [addresses, calculateTradeUsd, startPaperTrade]);
 
   useEffect(() => {
     const runningWalletIds = Object.entries(copySessions)
@@ -781,7 +810,15 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
     setPaperBudget(nextBudget);
 
-    const latestConfig = await loadAutoConfig(setupId) || currentConfig;
+    const strategyName = normalizeStrategyName(setupStrategy);
+    const sessionKey = buildSessionKey(setupId, strategyName);
+
+    const existingSession = copySessionsRef.current[sessionKey];
+    if (existingSession?.status === "running" || existingSession?.status === "syncing") {
+      return toast.error('Bu cüzdan için aynı Trade Stratejisi zaten aktif. Farklı bir Trade Stratejisi adı girin.');
+    }
+
+    const latestConfig = await loadAutoConfig(setupId, strategyName) || currentConfig;
     const tradeUsd = calculateTradeUsd(latestConfig, nextBudget);
     if (tradeUsd <= 0) return toast.error('Trade tutarı 0 dan büyük olmalı');
 
@@ -795,56 +832,62 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
       setCopySessions((prev) => ({
         ...prev,
-        [setupId]: {
+        [sessionKey]: {
+          addressId: setupId,
+          strategy: strategyName,
+          startedAt: new Date(),
           status: 'running',
           lastEventKey: latestEventKey,
           marketBuyCounts: {},
         },
       }));
-      setCopySessionErrors((prev) => ({ ...prev, [setupId]: null }));
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: null }));
 
       toast.success('Copy trade takip sistemi başlatıldı. Yeni aktiviteler otomatik kopyalanacak.');
       setCollapsed(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Takip başlatılırken event verisi alınamadı';
-      setCopySessionErrors((prev) => ({ ...prev, [setupId]: message }));
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: message }));
       toast.error(message);
     }
   };
 
-  const handleStop = (addressId: string) => {
-    const currentSession = copySessionsRef.current[addressId];
-    if (currentSession?.status === 'running' || currentSession?.status === 'syncing') {
-      const wallet = addresses.find((address) => address.id === addressId);
-      const strategy = walletConfigsRef.current[addressId]?.strategy || defaultConfig.strategy;
+  const handleStop = (sessionKey: string) => {
+    const currentSession = copySessionsRef.current[sessionKey];
+    if (!currentSession) return;
+
+    if (currentSession.status === 'running' || currentSession.status === 'syncing') {
+      const wallet = addresses.find((address) => address.id === currentSession.addressId);
       setTrackingHistory((prev) => [{
-        id: `${addressId}-${Date.now()}`,
-        addressId,
-        walletName: wallet?.username || wallet?.label || wallet?.address || addressId,
+        id: `${sessionKey}-${Date.now()}`,
+        addressId: currentSession.addressId,
+        startedAt: currentSession.startedAt,
+        walletName: wallet?.username || wallet?.label || wallet?.address || currentSession.addressId,
         walletAddress: wallet?.address,
-        strategy,
+        strategy: currentSession.strategy,
         stoppedAt: new Date(),
       }, ...prev]);
     }
 
     setCopySessions((prev) => ({
       ...prev,
-      [addressId]: {
-        ...prev[addressId],
+      [sessionKey]: {
+        ...prev[sessionKey],
         status: 'idle',
       },
     }));
-    setCopySessionErrors((prev) => ({ ...prev, [addressId]: null }));
+    setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: null }));
     toast.success('Copy trade takibi durduruldu');
   };
 
-  const openAnalysis = (addressId: string, strategy?: string) => {
+  const openAnalysis = (addressId: string, strategy?: string, startedAt?: Date) => {
     setAnalysisAddressId(addressId);
     setAnalysisStrategy(strategy || null);
+    setAnalysisStartedAt(startedAt || null);
     setView('analysis');
   };
 
-  const selectedSession = setupId ? copySessions[setupId] : undefined;
+  const selectedSession = activeConfigKey ? copySessions[activeConfigKey] : undefined;
   const isSelectedRunning = selectedSession?.status === 'running' || selectedSession?.status === 'syncing';
 
   return (
@@ -873,7 +916,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <Wallet className="w-4 h-4 text-primary" />
               <select
                 value={setupId || ''}
-                onChange={(e) => { setSetupId(e.target.value || null); setCollapsed(false); }}
+                onChange={(e) => { setSetupId(e.target.value || null); setSetupStrategy(defaultConfig.strategy); setCollapsed(false); }}
                 className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
               >
                 <option value="">Cüzdan seçin...</option>
@@ -886,7 +929,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
               <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-2 text-xs text-primary">
                 Takip aktif: {Object.entries(copySessions)
                   .filter(([, session]) => session.status !== 'idle')
-                  .map(([walletId]) => addresses.find((addr) => addr.id === walletId)?.username || addresses.find((addr) => addr.id === walletId)?.label || walletId)
+                  .map(([, session]) => {
+                    const wallet = addresses.find((addr) => addr.id === session.addressId);
+                    const walletName = wallet?.username || wallet?.label || session.addressId;
+                    return `${walletName} • ${session.strategy}`;
+                  })
                   .join(', ')}
               </div>
             )}
@@ -979,8 +1026,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         <span className="mb-1 block text-[11px] text-muted-foreground">Trade Stratejisi</span>
                         <input
                           type="text"
-                          value={currentConfig.strategy}
-                          onChange={(e) => setConfig({ strategy: e.target.value })}
+                          value={setupStrategy}
+                          onChange={(e) => setSetupStrategy(e.target.value)}
                           className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
                           placeholder="Strateji"
                         />
@@ -1006,7 +1053,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                     <Play className="w-4 h-4 inline mr-2" /> {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Başlat
                   </button>
                 ) : (
-                  <button onClick={() => setupId && handleStop(setupId)} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20">
+                  <button onClick={() => activeConfigKey && handleStop(activeConfigKey)} className="mt-3 w-full py-3 rounded-lg font-semibold text-sm bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20">
                     {(addresses.find(a => a.id === setupId)?.username || addresses.find(a => a.id === setupId)?.label || 'Seçili cüzdan')} için Takibi Durdur
                   </button>
                 )}
@@ -1018,18 +1065,18 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             <div className="mb-6">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
               <div className="space-y-2">
-                {runningSessions.map(({ addressId, session, strategy, walletName, walletAddress }) => {
-                  const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
+                {runningSessions.map(({ sessionKey, addressId, session, strategy, startedAt, walletName, walletAddress }) => {
+                  const activeTradeCount = getSessionActiveTradeCount(addressId, strategy, startedAt);
                   const statusLabel = session.status === 'syncing' ? 'SENKRONİZE EDİLİYOR' : 'TAKİP AKTİF';
                   return (
-                    <div key={addressId} className="glass-card p-4 border border-primary/20">
+                    <div key={sessionKey} className="glass-card p-4 border border-primary/20">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <p className="text-xs font-semibold text-foreground">{walletName} <span className="text-muted-foreground">• {strategy}</span></p>
                           <p className="font-mono text-[10px] text-muted-foreground truncate">{walletAddress || addressId}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">Bu cüzdan takip ediliyor. Yeni aktivite geldiğinde trade otomatik oluşacak.</p>
-                          {copySessionErrors[addressId] && (
-                            <p className="mt-2 text-[11px] text-destructive">Hata: {copySessionErrors[addressId]}</p>
+                          {copySessionErrors[sessionKey] && (
+                            <p className="mt-2 text-[11px] text-destructive">Hata: {copySessionErrors[sessionKey]}</p>
                           )}
                         </div>
                         <div className="flex items-center gap-2">
@@ -1037,7 +1084,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
                           <button
                             type="button"
-                            onClick={() => openAnalysis(addressId)}
+                            onClick={() => openAnalysis(addressId, strategy, startedAt)}
                             className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                           >
                             Analize Git
@@ -1102,7 +1149,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       </div>
                       <button
                         type="button"
-                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy)}
+                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy, historyItem.startedAt)}
                         className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                       >
                         Strateji Geçmişini Aç
