@@ -144,6 +144,7 @@ interface ActivityQuoteState {
 interface CopySessionState {
   addressId: string;
   strategy: string;
+  startedAt: Date;
   status: 'idle' | 'running' | 'syncing';
   lastEventKey?: string;
   marketBuyCounts?: Record<string, number>;
@@ -152,6 +153,7 @@ interface CopySessionState {
 interface TrackingHistoryItem {
   id: string;
   addressId: string;
+  startedAt: Date;
   walletName: string;
   walletAddress?: string;
   strategy: string;
@@ -257,6 +259,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [view, setView] = useState<'paper' | 'analysis'>('paper');
   const [analysisAddressId, setAnalysisAddressId] = useState<string | null>(null);
   const [analysisStrategy, setAnalysisStrategy] = useState<string | null>(null);
+  const [analysisStartedAt, setAnalysisStartedAt] = useState<Date | null>(null);
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
   const [trackingHistory, setTrackingHistory] = useState<TrackingHistoryItem[]>([]);
@@ -386,6 +389,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         addressId: session.addressId,
         session,
         strategy: session.strategy,
+        startedAt: session.startedAt,
         walletName: wallet?.username || wallet?.label || wallet?.address || session.addressId,
         walletAddress: wallet?.address,
       };
@@ -404,10 +408,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const analysisTrades = useMemo(
     () => tradesWithAddress.filter((trade) => {
       if (trade.addressId !== analysisAddressId) return false;
+      if (analysisStartedAt && new Date(trade.startedAt).getTime() < analysisStartedAt.getTime()) return false;
       if (!analysisStrategy) return true;
       return trade.strategy === analysisStrategy;
     }),
-    [analysisAddressId, analysisStrategy, tradesWithAddress],
+    [analysisAddressId, analysisStartedAt, analysisStrategy, tradesWithAddress],
   );
 
   const analysisWalletName = useMemo(() => {
@@ -822,6 +827,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         [sessionKey]: {
           addressId: setupId,
           strategy: strategyName,
+          startedAt: new Date(),
           status: 'running',
           lastEventKey: latestEventKey,
           marketBuyCounts: {},
@@ -847,6 +853,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       setTrackingHistory((prev) => [{
         id: `${sessionKey}-${Date.now()}`,
         addressId: currentSession.addressId,
+        startedAt: currentSession.startedAt,
         walletName: wallet?.username || wallet?.label || wallet?.address || currentSession.addressId,
         walletAddress: wallet?.address,
         strategy: currentSession.strategy,
@@ -865,9 +872,10 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     toast.success('Copy trade takibi durduruldu');
   };
 
-  const openAnalysis = (addressId: string, strategy?: string) => {
+  const openAnalysis = (addressId: string, strategy?: string, startedAt?: Date) => {
     setAnalysisAddressId(addressId);
     setAnalysisStrategy(strategy || null);
+    setAnalysisStartedAt(startedAt || null);
     setView('analysis');
   };
 
@@ -1049,7 +1057,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
             <div className="mb-6">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AKTİF TAKİPLER ({runningSessions.length})</h3>
               <div className="space-y-2">
-                {runningSessions.map(({ sessionKey, addressId, session, strategy, walletName, walletAddress }) => {
+                {runningSessions.map(({ sessionKey, addressId, session, strategy, startedAt, walletName, walletAddress }) => {
                   const activeTradeCount = activeTrades.filter((trade) => trade.addressId === addressId).length;
                   const statusLabel = session.status === 'syncing' ? 'SENKRONİZE EDİLİYOR' : 'TAKİP AKTİF';
                   return (
@@ -1068,7 +1076,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
                           <button
                             type="button"
-                            onClick={() => openAnalysis(addressId)}
+                            onClick={() => openAnalysis(addressId, strategy, startedAt)}
                             className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                           >
                             Analize Git
@@ -1133,7 +1141,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       </div>
                       <button
                         type="button"
-                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy)}
+                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy, historyItem.startedAt)}
                         className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                       >
                         Strateji Geçmişini Aç
