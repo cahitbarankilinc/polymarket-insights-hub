@@ -13,7 +13,7 @@ const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
 Asla:
 - Tavsiye verme, öneri verme, “yapmalısın / dene / test et / paper trading” gibi yönlendirici cümleler kurma.
@@ -604,6 +604,11 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
             return;
           }
 
+          if (!OPENAI_API_KEY) {
+            sendJson(500, { error: "OPENAI_API_KEY is required" });
+            return;
+          }
+
           const userPrompt = `Bütçem yaklaşık $100.
 
 Aşağıdaki veri bir Polymarket kullanıcısının trade/aktivite geçmişidir. 
@@ -657,8 +662,8 @@ ${context}`;
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "::",
-    port: 8080,
+    host: true,
+    port: Number(process.env.PORT) || 8080,
     allowedHosts: true,
     hmr: {
       overlay: false,
