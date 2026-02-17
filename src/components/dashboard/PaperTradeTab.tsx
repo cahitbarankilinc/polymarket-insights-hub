@@ -5,7 +5,9 @@ import {
   ArrowUpRight,
   ChevronDown,
   ChevronUp,
+  Pause,
   Play,
+  RotateCcw,
   Wallet,
 } from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
@@ -880,6 +882,42 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     toast.success('Copy trade takibi durduruldu');
   };
 
+  const handleRestartFromHistory = async (historyItem: TrackingHistoryItem) => {
+    const sessionKey = buildSessionKey(historyItem.addressId, historyItem.strategy);
+    const existingSession = copySessionsRef.current[sessionKey];
+    if (existingSession?.status === 'running' || existingSession?.status === 'syncing') {
+      return toast.error('Bu cüzdan için aynı Trade Stratejisi zaten aktif.');
+    }
+
+    const walletAddress = addresses.find((address) => address.id === historyItem.addressId)?.address || historyItem.walletAddress;
+    if (!walletAddress) return toast.error('Cüzdan adresi bulunamadı');
+
+    try {
+      const payload = await getWalletEventsWithStats(walletAddress);
+      const latestEvent = getLatestEvent(payload.events);
+      const latestEventKey = latestEvent ? getEventKey(latestEvent) : undefined;
+
+      setCopySessions((prev) => ({
+        ...prev,
+        [sessionKey]: {
+          addressId: historyItem.addressId,
+          strategy: historyItem.strategy,
+          startedAt: new Date(),
+          status: 'running',
+          lastEventKey: latestEventKey,
+          marketBuyCounts: {},
+        },
+      }));
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: null }));
+      setTrackingHistory((prev) => prev.filter((item) => item.id !== historyItem.id));
+      toast.success('Takip yeniden başlatıldı');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Takip yeniden başlatılırken event verisi alınamadı';
+      setCopySessionErrors((prev) => ({ ...prev, [sessionKey]: message }));
+      toast.error(message);
+    }
+  };
+
   const openAnalysis = (addressId: string, strategy?: string, startedAt?: Date) => {
     setAnalysisAddressId(addressId);
     setAnalysisStrategy(strategy || null);
@@ -1084,6 +1122,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           <span className="px-2 py-1 rounded text-[10px] font-semibold bg-secondary/60 text-foreground">Aktif Trade: {activeTradeCount}</span>
                           <button
                             type="button"
+                            onClick={() => handleStop(sessionKey)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20"
+                          >
+                            <Pause className="w-3.5 h-3.5" /> Durdur
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => openAnalysis(addressId, strategy, startedAt)}
                             className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
                           >
@@ -1147,13 +1192,22 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         <p className="font-mono text-[10px] text-muted-foreground truncate">{historyItem.walletAddress || historyItem.addressId}</p>
                         <p className="mt-1 text-[11px] text-muted-foreground">Durdurma zamanı: {formatDate(historyItem.stoppedAt)}</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy, historyItem.startedAt)}
-                        className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
-                      >
-                        Strateji Geçmişini Aç
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleRestartFromHistory(historyItem)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium border border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" /> Tekrar Başlat
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openAnalysis(historyItem.addressId, historyItem.strategy, historyItem.startedAt)}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-medium border border-primary/40 text-primary hover:bg-primary/10"
+                        >
+                          Strateji Geçmişini Aç
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
