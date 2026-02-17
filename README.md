@@ -1,87 +1,77 @@
-# Welcome to your Lovable project
+# Polymarket Insights Hub
 
-## Project info
+## Local development
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
-
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+- Frontend: Vite dev server
+- API: Vite middleware üzerinden `/api/tracker/*`
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Production (Render) deployment
 
-**Use GitHub Codespaces**
+Bu projede production için Vite dev server kullanılmaz.
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+```bash
+npm run build
+npm start
+```
 
-## What technologies are used for this project?
+- `npm run build` ile `dist/` oluşturulur.
+- `npm start` ile `server.js` çalışır.
+- `server.js` hem `dist/` dosyalarını serve eder hem `/api/tracker/*` endpoint'lerini çalıştırır.
 
-This project is built with:
+## Required Environment Variables
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+- `OPENAI_API_KEY` (zorunlu, `/api/tracker/copytrade-advisor` için)
+- `PORT` (opsiyonel, Render tarafından otomatik verilir)
 
-## How can I deploy this project?
+## Render ayarları (Build & Start commands)
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+### En güvenli yöntem (önerilen): `render.yaml` kullan
 
-## Can I connect a custom domain to my Lovable project?
+Repo içinde `render.yaml` hazır gelir. Render üzerinde **New + > Blueprint** ile bu dosyadan servis oluştur.
 
-Yes, you can!
+Bu şekilde otomatik olarak:
+- **Build Command:** `npm ci --include=dev && npm run build`
+- **Start Command:** `npm start`
+- **Node Version:** `20`
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+### Elle oluşturacaksan
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+Render > Web Service ayarlarına şunları gir:
+- **Build Command:** `npm ci --include=dev && npm run build`
+- **Start Command:** `npm start`
+- **Node Version (öneri):** `20.x` (veya en az `18+`)
+- **Environment Variable:** `OPENAI_API_KEY=...`
 
+## Render hata notu (`vite: not found`)
 
-## Local Polymarket tracking workflow
+Eğer log’da `sh: 1: vite: not found` görürsen, build aşamasında devDependencies kurulmamıştır.
 
-Bu proje artık `➕ Adres Ekle` tabından girilen **Ethereum wallet** adresleri için local takip başlatır.
+Çözüm:
+- Build komutunu mutlaka `npm ci --include=dev && npm run build` yap.
+- Sonra yeni deploy başlat.
 
-- Takip başlatma endpointi: `POST /api/tracker/start`
-- Takip listesi endpointi: `GET /api/tracker/list`
-- Wallet event endpointi: `GET /api/tracker/events/:address`
+## Free plan notu
 
-Veriler proje kökünde bu klasöre yazılır:
+- Render Free plan servisleri boşta kaldığında spin-down yapar.
+- İlk istekte cold start gecikmesi olabilir.
+
+## Dosya yapısı açıklaması
+
+- `src/`: React + TypeScript frontend
+- `vite.config.ts`: Local development ayarları ve dev middleware API
+- `server.js`: Production HTTP server (SPA serve + `/api/tracker/*`)
+- `render.yaml`: Render blueprint (build/start/env ayarları)
+- `polymarket_profile_extract.py`: Tracker profile çıkarımı için Python script
+- `tracked_wallets/`: Takip verilerinin runtime yazıldığı klasör
+
+## tracked_wallets klasörü hakkında not
+
+`tracked_wallets/` klasörü runtime'da otomatik oluşturulur ve wallet bazlı dosyaları yazar:
 
 ```txt
 tracked_wallets/<wallet_address>/
@@ -90,11 +80,4 @@ tracked_wallets/<wallet_address>/
   - errors.log
 ```
 
-Geliştirme ortamında çalıştırmak için:
-
-```sh
-npm i
-npm run dev
-```
-
-Sonra arayüzden `➕ Adres Ekle` tabında bir `0x...` adresi ekleyin; takip sonuçlarını `Takip Listesi` içinde görebilirsiniz.
+Production'da bu klasör sunucu dosya sistemi üzerinde yazılabilir olmalıdır.
