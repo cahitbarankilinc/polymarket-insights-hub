@@ -11,7 +11,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { useDashboard, type CopyMode } from '@/context/DashboardContext';
-import { getMarketQuote, getWalletEventsWithStats, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
+import { getMarketQuote, getWalletEventsWithStats, postRealTrade, type WalletTrackerEvent } from '@/lib/polymarketTrackerApi';
 import { Scatter, ScatterChart, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { toast } from 'sonner';
 
@@ -127,6 +127,7 @@ interface BudgetDraft {
 
 interface TradeActivity {
   id: string;
+  tradeId: string;
   side: 'BUY' | 'SELL';
   occurredAt: Date;
   market: string;
@@ -136,6 +137,8 @@ interface TradeActivity {
   share: number;
   usd: number;
 }
+
+type RealTradeStatus = 'matched' | 'live' | 'error';
 
 interface ActivityQuoteState {
   benchmarkPrice: number;
@@ -261,7 +264,15 @@ const getEventKey = (event: WalletTrackerEvent): string => (
   || `${event.seen_at_utc}:${event.market ?? ''}:${event.side ?? ''}:${event.value_usd ?? ''}:${event.price ?? ''}`
 );
 
-export default function PaperTradeTab({ preselectedId, prefill }: { preselectedId?: string | null; prefill?: PaperTradePrefill | null }) {
+export default function PaperTradeTab({
+  preselectedId,
+  prefill,
+  variant = 'paper',
+}: {
+  preselectedId?: string | null;
+  prefill?: PaperTradePrefill | null;
+  variant?: 'paper' | 'real';
+}) {
   const { addresses, paperTrades, startPaperTrade, paperBudget, setPaperBudget } = useDashboard();
   const [setupId, setSetupId] = useState<string | null>(preselectedId || null);
   const [setupStrategy, setSetupStrategy] = useState(defaultConfig.strategy);
@@ -280,6 +291,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
   const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const [activityQuotes, setActivityQuotes] = useState<Record<string, ActivityQuoteState>>({});
   const [trackingHistory, setTrackingHistory] = useState<TrackingHistoryItem[]>([]);
+  const [realTradeStatuses, setRealTradeStatuses] = useState<Record<string, RealTradeStatus>>({});
   const copySessionsRef = useRef(copySessions);
   const walletConfigsRef = useRef(walletConfigs);
   const syncingWalletsRef = useRef<Set<string>>(new Set());
@@ -456,6 +468,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     .filter((trade) => trade.side !== 'SELL')
     .map((trade) => ({
     id: `${trade.id}-buy-${new Date(trade.startedAt).getTime()}-${trade.market ?? ''}-${trade.outcome ?? ''}-${trade.amount}`,
+    tradeId: trade.id,
     side: 'BUY',
     occurredAt: new Date(trade.startedAt),
     market: trade.market || '-',
@@ -470,6 +483,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     .filter((trade) => trade.side === 'SELL' || trade.status === 'closed')
     .map((trade) => ({
       id: `${trade.id}-sell-${new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)).getTime()}-${trade.market ?? ''}-${trade.outcome ?? ''}-${trade.amount}`,
+      tradeId: trade.id,
       side: 'SELL',
       occurredAt: new Date(trade.side === 'SELL' ? trade.startedAt : (trade.closedAt || trade.startedAt)),
       market: trade.market || '-',
@@ -748,6 +762,35 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
 
         if (result.ok) {
           openedTrades += 1;
+          if (variant === 'real' && result.tradeId) {
+            const tradeId = result.tradeId;
+            const adjustedPrice = Number((eventPrice + (parseSlippageCents(eventConfig.slippageCents) / 100)).toFixed(6));
+            try {
+              if (!event.market_slug || !event.outcome || !event.asset_id) {
+                throw new Error('Gerçek trade için market_slug/outcome/asset_id eksik');
+              }
+
+              const tradeResponse = await postRealTrade({
+                marketSlug: event.market_slug,
+                outcome: event.outcome,
+                assetId: event.asset_id,
+                side: eventSide,
+                price: adjustedPrice,
+                size: eventSize,
+                slippageCents: parseSlippageCents(eventConfig.slippageCents),
+              });
+
+              const normalizedStatus = String(tradeResponse.status ?? '').toLowerCase();
+              setRealTradeStatuses((prev) => ({
+                ...prev,
+                [tradeId]: normalizedStatus === 'matched' ? 'matched' : (normalizedStatus === 'live' ? 'live' : 'error'),
+              }));
+            } catch (realTradeError) {
+              setRealTradeStatuses((prev) => ({ ...prev, [tradeId]: 'error' }));
+              const message = realTradeError instanceof Error ? realTradeError.message : 'Gerçek trade gönderilemedi';
+              toast.error(message);
+            }
+          }
           if (eventConfig.mode === 'buy-wait') {
             const marketKey = resolveMarketKey(event);
             if (marketKey) nextMarketBuyCounts[marketKey] = (nextMarketBuyCounts[marketKey] || 0) + 1;
@@ -779,7 +822,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     } finally {
       syncingWalletsRef.current.delete(sessionKey);
     }
-  }, [addresses, calculateTradeUsd, startPaperTrade]);
+  }, [addresses, calculateTradeUsd, startPaperTrade, variant]);
 
   useEffect(() => {
     const runningWalletIds = Object.entries(copySessions)
@@ -947,15 +990,17 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     <div className="animate-slide-up">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-xl font-bold text-foreground">Paper Trading</h2>
-          <p className="text-xs text-muted-foreground">Bütçe + cüzdan bazlı copy trade test ortamı</p>
+          <h2 className="text-xl font-bold text-foreground">{variant === 'real' ? 'Gerçek Trade' : 'Paper Trading'}</h2>
+          <p className="text-xs text-muted-foreground">
+            {variant === 'real' ? 'Paper Trade ile aynı akış + Polymarket emir gönderimi' : 'Bütçe + cüzdan bazlı copy trade test ortamı'}
+          </p>
         </div>
         {view === 'analysis' && (
           <button
             onClick={() => setView('paper')}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs border border-border/30 bg-secondary/40 hover:bg-secondary/70"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Paper Trade ekranına dön
+            <ArrowLeft className="w-3.5 h-3.5" /> {variant === 'real' ? 'Gerçek Trade ekranına dön' : 'Paper Trade ekranına dön'}
           </button>
         )}
       </div>
@@ -1313,6 +1358,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         {activityQuotes[activity.id]
                           ? `Fark: ${Math.abs(activityQuotes[activity.id].diffPrice) <= (analysisSlippageCents / 100) ? '✅ ' : '❌ '}${formatSignedPrice(activityQuotes[activity.id].diffPrice)} • Canlı ${activityQuotes[activity.id].benchmarkLabel}: ${formatPrice(activityQuotes[activity.id].benchmarkPrice)} • `
                           : ''}
+                        {variant === 'real' ? `Durum: ${realTradeStatuses[activity.tradeId] === 'matched' ? '✅' : realTradeStatuses[activity.tradeId] === 'live' ? '☑️' : realTradeStatuses[activity.tradeId] === 'error' ? '❌' : '⏳'} • ` : ''}
                         Price: {activity.price.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} • Share: {activity.share.toLocaleString('tr-TR', { maximumFractionDigits: 6 })} • USD: {activity.usd.toLocaleString('tr-TR', { maximumFractionDigits: 2 })}
                       </p>
                     </div>

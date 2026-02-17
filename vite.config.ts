@@ -12,6 +12,7 @@ const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
+const TEST_TRADE_SCRIPT_PATH = path.resolve(process.cwd(), "test_trade.py");
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
@@ -63,6 +64,16 @@ type MarketQuote = {
   ask: number | null;
   bidCents: number | null;
   askCents: number | null;
+};
+
+type RealTradeRequest = {
+  marketSlug?: string;
+  outcome?: string;
+  assetId?: string;
+  side?: string;
+  price?: number;
+  size?: number;
+  slippageCents?: number;
 };
 
 type WalletEventStats = {
@@ -636,6 +647,58 @@ ${context}`;
             model: OPENAI_MODEL,
             analysis: extractResponseText(payload),
           });
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/api/tracker/real-trade") {
+          const parsed = await readJsonBody<RealTradeRequest>(req);
+          const marketSlug = typeof parsed.marketSlug === "string" ? parsed.marketSlug.trim() : "";
+          const outcome = typeof parsed.outcome === "string" ? parsed.outcome.trim() : "";
+          const assetId = typeof parsed.assetId === "string" ? parsed.assetId.trim() : "";
+          const side = typeof parsed.side === "string" ? parsed.side.trim().toUpperCase() : "";
+          const price = typeof parsed.price === "number" && Number.isFinite(parsed.price) ? parsed.price : 0;
+          const size = typeof parsed.size === "number" && Number.isFinite(parsed.size) ? parsed.size : 0;
+
+          if (!marketSlug || !outcome || !assetId || !["BUY", "SELL"].includes(side) || price <= 0 || size <= 0) {
+            sendJson(400, { success: false, errorMsg: "marketSlug/outcome/assetId/side/price/size geçerli olmalı" });
+            return;
+          }
+
+          const privateKey = process.env.POLYMARKET_PRIVATE_KEY ?? "";
+          const funderAddress = process.env.POLYMARKET_FUNDER_ADDRESS ?? "";
+          if (!privateKey.trim()) {
+            sendJson(400, { success: false, errorMsg: "POLYMARKET_PRIVATE_KEY env değişkeni boş" });
+            return;
+          }
+
+          const processResult = spawnSync("python", [
+            TEST_TRADE_SCRIPT_PATH,
+            "--json",
+            "--market-slug", marketSlug,
+            "--outcome", outcome,
+            "--asset-id", assetId,
+            "--side", side,
+            "--price", String(price),
+            "--size", String(size),
+            "--private-key", privateKey,
+            "--signature-type", "1",
+            "--funder-address", funderAddress,
+          ], { encoding: "utf-8", env: process.env });
+
+          if (processResult.status !== 0) {
+            sendJson(500, {
+              success: false,
+              errorMsg: processResult.stderr?.trim() || processResult.stdout?.trim() || "Trade script failed",
+            });
+            return;
+          }
+
+          try {
+            const payload = JSON.parse((processResult.stdout || "{}").trim()) as Record<string, unknown>;
+            sendJson(200, payload);
+          } catch {
+            sendJson(500, { success: false, errorMsg: "Trade response parse edilemedi" });
+          }
           return;
         }
 

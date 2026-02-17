@@ -79,7 +79,7 @@ interface DashboardContextType {
   addCategory: (category: string) => void;
   addToPaperTrade: (addressId: string) => void;
   setPaperBudget: (config: { mode: 'unlimited' | 'limited'; type: 'daily' | 'total'; amount: number }) => void;
-  startPaperTrade: (addressId: string, input: StartPaperTradeInput) => { ok: boolean; reason?: string };
+  startPaperTrade: (addressId: string, input: StartPaperTradeInput) => { ok: boolean; reason?: string; tradeId?: string };
   closePaperTrade: (tradeId: string) => void;
 }
 
@@ -207,8 +207,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     const amount = input.shareAmount && Number.isFinite(input.shareAmount) && input.shareAmount > 0
       ? input.shareAmount
       : (spendUsd > 0 ? +(spendUsd / price).toFixed(6) : 0.001);
+    const tradeId = createTradeId();
     const trade: PaperTrade = {
-      id: createTradeId(),
+      id: tradeId,
       addressId,
       address: addr.address,
       category: addr.category,
@@ -227,7 +228,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       outcome: input.outcome,
     };
     setPaperTrades(prev => [...prev, trade]);
-    return { ok: true };
+    return { ok: true, tradeId };
   }, [addresses, paperBudget]);
 
   const closePaperTrade = useCallback((tradeId: string) => {

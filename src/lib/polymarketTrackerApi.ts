@@ -24,6 +24,24 @@ export type MarketQuote = {
   askCents: number | null;
 };
 
+export type RealTradePayload = {
+  marketSlug: string;
+  outcome: string;
+  assetId: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  slippageCents: number;
+};
+
+export type RealTradeResponse = {
+  success: boolean;
+  status?: string;
+  errorMsg?: string;
+  orderID?: string;
+  [key: string]: unknown;
+};
+
 export type WalletTrackerInfo = {
   address: string;
   eventCount: number;
@@ -152,4 +170,19 @@ export async function getMarketQuote(market: string, outcome: string): Promise<M
   }
 
   return response.json() as Promise<MarketQuote>;
+}
+
+export async function postRealTrade(payload: RealTradePayload): Promise<RealTradeResponse> {
+  const response = await fetch('/api/tracker/real-trade', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const result = await response.json() as RealTradeResponse;
+  if (!response.ok) {
+    throw new Error(typeof result.errorMsg === 'string' && result.errorMsg.trim() ? result.errorMsg : 'Gerçek trade gönderilemedi');
+  }
+
+  return result;
 }

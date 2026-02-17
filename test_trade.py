@@ -1,3 +1,11 @@
+import argparse
+import json
+from pprint import pprint
+
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.order_builder.constants import BUY, SELL
+
 MARKET_SLUG = "btc-updown-15m-1771281000"
 OUTCOME = "UP"
 ASSET_ID = (
@@ -8,67 +16,81 @@ PRICE = 0.99  # 0.95 = 95¢
 SIZE = 2  # kaç adet token
 PRIVATE_KEY = ""
 
-# ==============================
-
 SIGNATURE_TYPE = 1
 FUNDER_ADDRESS = ""
-
-# ==============================
-
-from pprint import pprint
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY, SELL
 
 CLOB_API = "https://clob.polymarket.com"
 CHAIN_ID = 137  # Polygon mainnet
 
 
-def main():
-    print("====================================")
-    print(" POLYMARKET LIMIT ORDER TEST")
-    print("====================================")
-    print(f"Market:        {MARKET_SLUG}")
-    print(f"Outcome:       {OUTCOME}")
-    print(f"Asset ID:      {ASSET_ID}")
-    print(f"Side:          {SIDE}")
-    print(f"Limit Price:   {PRICE}")
-    print(f"Size:          {SIZE}")
-    print(f"SignatureType: {SIGNATURE_TYPE}")
-    print(f"Funder:        {FUNDER_ADDRESS if FUNDER_ADDRESS else '(none)'}")
-    print("====================================\n")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Polymarket limit order test")
+    parser.add_argument("--market-slug", default=MARKET_SLUG)
+    parser.add_argument("--outcome", default=OUTCOME)
+    parser.add_argument("--asset-id", default=ASSET_ID)
+    parser.add_argument("--side", default=SIDE)
+    parser.add_argument("--price", type=float, default=PRICE)
+    parser.add_argument("--size", type=float, default=SIZE)
+    parser.add_argument("--private-key", default=PRIVATE_KEY)
+    parser.add_argument("--signature-type", type=int, default=SIGNATURE_TYPE)
+    parser.add_argument("--funder-address", default=FUNDER_ADDRESS)
+    parser.add_argument("--json", action="store_true", help="Print JSON-only response")
+    return parser.parse_args()
 
-    if SIDE.upper() not in ("BUY", "SELL"):
+
+def main():
+    args = parse_args()
+
+    if not args.json:
+        print("====================================")
+        print(" POLYMARKET LIMIT ORDER TEST")
+        print("====================================")
+        print(f"Market:        {args.market_slug}")
+        print(f"Outcome:       {args.outcome}")
+        print(f"Asset ID:      {args.asset_id}")
+        print(f"Side:          {args.side}")
+        print(f"Limit Price:   {args.price}")
+        print(f"Size:          {args.size}")
+        print(f"SignatureType: {args.signature_type}")
+        print(f"Funder:        {args.funder_address if args.funder_address else '(none)'}")
+        print("====================================\n")
+
+    if args.side.upper() not in ("BUY", "SELL"):
         raise ValueError('SIDE must be "BUY" or "SELL"')
 
-    side_const = BUY if SIDE.upper() == "BUY" else SELL
+    side_const = BUY if args.side.upper() == "BUY" else SELL
 
-    # Auth client (notebook’taki gibi)
     clob_kwargs = dict(
         host=CLOB_API,
-        key=PRIVATE_KEY,
+        key=args.private_key,
         chain_id=CHAIN_ID,
-        signature_type=SIGNATURE_TYPE,
+        signature_type=args.signature_type,
     )
-    if FUNDER_ADDRESS.strip():
-        clob_kwargs["funder"] = FUNDER_ADDRESS.strip()
+    if args.funder_address.strip():
+        clob_kwargs["funder"] = args.funder_address.strip()
 
     auth_client = ClobClient(**clob_kwargs)
 
-    print("🔐 Deriving API key / setting creds ...")
+    if not args.json:
+        print("🔐 Deriving API key / setting creds ...")
     creds = auth_client.derive_api_key()
     auth_client.set_api_creds(creds)
 
-    # Limit order
     limit_order = OrderArgs(
-        token_id=ASSET_ID, price=float(PRICE), size=float(SIZE), side=side_const
+        token_id=args.asset_id, price=float(args.price), size=float(args.size), side=side_const
     )
 
-    print("✍️  Signing limit order ...")
+    if not args.json:
+        print("✍️  Signing limit order ...")
     signed_order = auth_client.create_order(limit_order)
 
-    print("📤 Posting order (GTC) ...")
+    if not args.json:
+        print("📤 Posting order (GTC) ...")
     resp = auth_client.post_order(signed_order, OrderType.GTC)
+
+    if args.json:
+        print(json.dumps(resp))
+        return
 
     print("\n✅ Response:")
     pprint(resp)
