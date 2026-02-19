@@ -16,11 +16,11 @@ import { Scatter, ScatterChart, ResponsiveContainer, XAxis, YAxis, CartesianGrid
 import { toast } from 'sonner';
 
 const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: string }> = [
-  { value: 'notional', label: '1:1 Notional Copy', description: 'Onun aldığı USD kadar al.' },
+  { value: 'notional', label: '1e1 Direct Copy', description: 'Onun aldığı USD kadar al.' },
   { value: 'proportional', label: 'Proportional to Free Balance', description: 'Boştaki bakiyeye göre oranla.' },
   { value: 'multiplier', label: 'Multiplier Mode', description: 'Onun trade tutarı × k.' },
-  { value: 'fixed-amount', label: 'Fixed Amount per Trade', description: 'Her işlemde sabit USD.' },
-  { value: 'buy-wait', label: 'Al Bekle', description: 'Her markette ilk N alımı sabit USD ile kopyala.' },
+  { value: 'fixed-amount', label: 'Fixed USD Trade', description: 'Her işlemde sabit USD.' },
+  { value: 'buy-wait', label: 'X-Time copy', description: 'Her markette ilk N alımı sabit USD ile kopyala.' },
 ];
 
 interface WalletModeConfig {
