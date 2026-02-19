@@ -37,6 +37,10 @@ interface WalletModeConfig {
   fixedShares: string;
   sharePrice: string;
   slippageCents: string;
+  centRangeMin: string;
+  centRangeMax: string;
+  shareRangeMin: string;
+  shareRangeMax: string;
   strategy: string;
   direction: 'long' | 'short';
 }
@@ -51,6 +55,10 @@ const defaultConfig: WalletModeConfig = {
   fixedShares: '50',
   sharePrice: '1',
   slippageCents: '5',
+  centRangeMin: '',
+  centRangeMax: '',
+  shareRangeMin: '',
+  shareRangeMax: '',
   strategy: getCopyModeLabel('notional'),
   direction: 'long',
 };
@@ -194,6 +202,69 @@ const normalizeStrategyName = (value: string | undefined): string => {
 
 const buildSessionKey = (addressId: string, strategy: string): string => `${addressId}::${normalizeStrategyName(strategy)}`;
 
+const parseOptionalNumber = (value: string | undefined): number | null => {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+};
+
+const validateRangeConfig = (config: WalletModeConfig): string | null => {
+  const centMin = parseOptionalNumber(config.centRangeMin);
+  const centMax = parseOptionalNumber(config.centRangeMax);
+
+  if ((centMin === null) !== (centMax === null)) return 'Alınacak Cent Aralığı için iki kutu da doldurulmalı.';
+  if (centMin !== null && centMax !== null) {
+    if (!Number.isFinite(centMin) || !Number.isFinite(centMax)) return 'Alınacak Cent Aralığı sayısal olmalı.';
+    if (centMin < 1 || centMax > 99) return 'Alınacak Cent Aralığı 1 ile 99 arasında olmalı.';
+    if (centMax < centMin) return 'Alınacak Cent Aralığında ikinci kutu ilk kutudan küçük olamaz.';
+  }
+
+  const shareMin = parseOptionalNumber(config.shareRangeMin);
+  const shareMax = parseOptionalNumber(config.shareRangeMax);
+  if ((shareMin === null) !== (shareMax === null)) return 'Alınacak Share Aralığı için iki kutu da doldurulmalı.';
+  if (shareMin !== null && shareMax !== null) {
+    if (!Number.isFinite(shareMin) || !Number.isFinite(shareMax)) return 'Alınacak Share Aralığı sayısal olmalı.';
+    if (shareMin < 0 || shareMax < 0) return 'Alınacak Share Aralığı negatif olamaz.';
+    if (shareMax < shareMin) return 'Alınacak Share Aralığında ikinci kutu ilk kutudan küçük olamaz.';
+  }
+
+  return null;
+};
+
+const isEventInConfiguredRanges = (eventPrice: number, eventSize: number, config: WalletModeConfig): boolean => {
+  const centMin = parseOptionalNumber(config.centRangeMin);
+  const centMax = parseOptionalNumber(config.centRangeMax);
+  if (centMin !== null && centMax !== null && Number.isFinite(centMin) && Number.isFinite(centMax)) {
+    const priceCents = Math.round(eventPrice * 100);
+    if (priceCents < centMin || priceCents > centMax) return false;
+  }
+
+  const shareMin = parseOptionalNumber(config.shareRangeMin);
+  const shareMax = parseOptionalNumber(config.shareRangeMax);
+  if (shareMin !== null && shareMax !== null && Number.isFinite(shareMin) && Number.isFinite(shareMax)) {
+    if (eventSize < shareMin || eventSize > shareMax) return false;
+  }
+
+  return true;
+};
+
+const normalizeCentInputOnBlur = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const parsed = Math.round(Number(trimmed));
+  if (!Number.isFinite(parsed)) return '';
+  return String(Math.min(99, Math.max(1, parsed)));
+};
+
+const normalizeShareInputOnBlur = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return '';
+  return String(Math.max(0, parsed));
+};
+
 
 const describeSessionConfig = (config: WalletModeConfig): string => {
   const modeLabel = COPY_MODE_OPTIONS.find((option) => option.value === config.mode)?.label || config.mode;
@@ -206,7 +277,13 @@ const describeSessionConfig = (config: WalletModeConfig): string => {
   else modeDetail = `Kaynak Trade: $${config.sourceTradeUsd || '-'}`;
 
   const slippage = config.slippageCents || '0';
-  return `Opsiyon: ${modeLabel} • ${modeDetail} • Slippage: ${slippage}¢`;
+  const centRangeLabel = config.centRangeMin && config.centRangeMax
+    ? `${config.centRangeMin}-${config.centRangeMax}¢`
+    : 'Kapalı';
+  const shareRangeLabel = config.shareRangeMin && config.shareRangeMax
+    ? `${config.shareRangeMin}-${config.shareRangeMax}`
+    : 'Kapalı';
+  return `Opsiyon: ${modeLabel} • ${modeDetail} • Slippage: ${slippage}¢ • Cent: ${centRangeLabel} • Share: ${shareRangeLabel}`;
 };
 
 const toEventTimestamp = (event: WalletTrackerEvent): number => {
@@ -347,6 +424,11 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       setView('paper');
     }
   }, [preselectedId]);
+
+  useEffect(() => {
+    if (setupId || preselectedId || addresses.length === 0) return;
+    setSetupId(addresses[0].id);
+  }, [addresses, preselectedId, setupId]);
 
   useEffect(() => {
     if (!setupId || !prefill) return;
@@ -598,6 +680,40 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     }));
   };
 
+  const handleStrategyInputChange = (nextStrategyValue: string) => {
+    if (!setupId) {
+      setSetupStrategy(nextStrategyValue);
+      return;
+    }
+
+    const previousStrategy = setupStrategy;
+    const previousKey = buildSessionKey(setupId, previousStrategy);
+    const nextKey = buildSessionKey(setupId, nextStrategyValue);
+
+    setSetupStrategy(nextStrategyValue);
+
+    if (previousKey === nextKey) return;
+
+    setWalletConfigs((prev) => {
+      const previousConfig = prev[previousKey] || prev[nextKey];
+      if (!previousConfig) return prev;
+
+      const nextConfig: WalletModeConfig = {
+        ...previousConfig,
+        strategy: normalizeStrategyName(nextStrategyValue),
+      };
+
+      const rest = { ...prev };
+      delete rest[previousKey];
+      return {
+        ...rest,
+        [nextKey]: nextConfig,
+      };
+    });
+  };
+
+  const isWalletSelected = Boolean(setupId);
+
   const resolveBudgetDraft = (): BudgetDraft => ({
     mode: budgetMode,
     type: budgetType,
@@ -715,6 +831,8 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
         const eventPrice = toPositiveNumber(event.price);
         const eventSize = toPositiveNumber(event.size);
         if (eventPrice <= 0 || eventSize <= 0) continue;
+
+        if (!isEventInConfiguredRanges(eventPrice, eventSize, cfg)) continue;
 
         const sourceTradeUsd = resolveEventTradeUsd(event, toPositiveNumber(cfg.sourceTradeUsd));
         const eventConfig: WalletModeConfig = {
@@ -839,7 +957,13 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
       return toast.error('Bu cüzdan için aynı Trade Stratejisi zaten aktif. Farklı bir Trade Stratejisi adı girin.');
     }
 
+    const rangeError = validateRangeConfig(currentConfig);
+    if (rangeError) return toast.error(rangeError);
+
     const latestConfig = await loadAutoConfig(setupId, strategyName) || currentConfig;
+    const latestConfigRangeError = validateRangeConfig(latestConfig);
+    if (latestConfigRangeError) return toast.error(latestConfigRangeError);
+
     const tradeUsd = calculateTradeUsd(latestConfig, nextBudget);
     if (tradeUsd <= 0) return toast.error('Trade tutarı 0 dan büyük olmalı');
 
@@ -1026,6 +1150,88 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                   </div>
                 )}
                 <button onClick={applyBudget} className="px-3 py-2 rounded-lg text-xs bg-primary/10 text-primary border border-primary/30">Bütçeyi Kaydet</button>
+
+                <div className="mt-4 space-y-3">
+                  {!isWalletSelected && (
+                    <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+                      Aralık değerlerini düzenlemek için önce bir cüzdan seçin.
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-2 block">Alınacak Cent Aralığı</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="99"
+                        value={currentConfig.centRangeMin}
+                        onChange={(e) => setConfig({ centRangeMin: e.target.value })}
+                        onBlur={(e) => setConfig({ centRangeMin: normalizeCentInputOnBlur(e.target.value) })}
+                        disabled={!isWalletSelected}
+                        className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                        placeholder="Min (1-99)"
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        max="99"
+                        value={currentConfig.centRangeMax}
+                        onChange={(e) => setConfig({ centRangeMax: e.target.value })}
+                        onBlur={(e) => setConfig({ centRangeMax: normalizeCentInputOnBlur(e.target.value) })}
+                        disabled={!isWalletSelected}
+                        className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                        placeholder="Maks (1-99)"
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">Bu aralık yalnızca aktivitedeki Price değerine uygulanır (dahilidir).</p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-2 block">Alınacak Share Aralığı</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        value={currentConfig.shareRangeMin}
+                        onChange={(e) => setConfig({ shareRangeMin: e.target.value })}
+                        onBlur={(e) => setConfig({ shareRangeMin: normalizeShareInputOnBlur(e.target.value) })}
+                        disabled={!isWalletSelected}
+                        className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                        placeholder="Min Share"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        value={currentConfig.shareRangeMax}
+                        onChange={(e) => setConfig({ shareRangeMax: e.target.value })}
+                        onBlur={(e) => setConfig({ shareRangeMax: normalizeShareInputOnBlur(e.target.value) })}
+                        disabled={!isWalletSelected}
+                        className="px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
+                        placeholder="Maks Share"
+                      />
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={!isWalletSelected}
+                        onClick={() => setConfig({ centRangeMin: '40', centRangeMax: '60' })}
+                        className="px-2 py-1 rounded border border-border/40 text-[11px] text-muted-foreground disabled:opacity-40"
+                      >
+                        Hazır Cent: 40-60
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!isWalletSelected}
+                        onClick={() => setConfig({ centRangeMin: '', centRangeMax: '', shareRangeMin: '', shareRangeMax: '' })}
+                        className="px-2 py-1 rounded border border-border/40 text-[11px] text-muted-foreground disabled:opacity-40"
+                      >
+                        Aralıkları Temizle
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -1085,7 +1291,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                         <input
                           type="text"
                           value={setupStrategy}
-                          onChange={(e) => setSetupStrategy(e.target.value)}
+                          onChange={(e) => handleStrategyInputChange(e.target.value)}
                           className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
                           placeholder="Strateji"
                         />
