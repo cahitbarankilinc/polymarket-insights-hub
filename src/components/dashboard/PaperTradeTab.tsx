@@ -23,6 +23,10 @@ const COPY_MODE_OPTIONS: Array<{ value: CopyMode; label: string; description: st
   { value: 'buy-wait', label: 'X-Time copy', description: 'Her markette ilk N alımı sabit USD ile kopyala.' },
 ];
 
+const getCopyModeLabel = (mode: CopyMode): string => (
+  COPY_MODE_OPTIONS.find((option) => option.value === mode)?.label || 'Copy Trading'
+);
+
 interface WalletModeConfig {
   mode: CopyMode;
   sourceTradeUsd: string;
@@ -46,8 +50,8 @@ const defaultConfig: WalletModeConfig = {
   buyWaitLimit: '2',
   fixedShares: '50',
   sharePrice: '1',
-  slippageCents: '1',
-  strategy: 'Copy Trading',
+  slippageCents: '5',
+  strategy: getCopyModeLabel('notional'),
   direction: 'long',
 };
 
@@ -389,7 +393,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
     return {
       ...trade,
       walletName,
-      marketLabel: `${trade.strategy || 'Copy Trading'} • ${walletName}`,
+      marketLabel: `${trade.strategy || defaultConfig.strategy} • ${walletName}`,
       buyUsd: isSellSide ? 0 : spendUsd,
       sellUsd: isSellSide ? spendUsd : (trade.status === 'closed' ? trade.currentPrice * trade.amount : 0),
     };
@@ -1035,6 +1039,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                       value={currentConfig.mode}
                       onChange={(e) => {
                         const nextMode = e.target.value as CopyMode;
+                        setSetupStrategy(getCopyModeLabel(nextMode));
                         setConfig({ mode: nextMode });
                         if (nextMode === 'proportional') {
                           setBudgetMode('limited');
@@ -1094,7 +1099,7 @@ export default function PaperTradeTab({ preselectedId, prefill }: { preselectedI
                           value={currentConfig.slippageCents}
                           onChange={(e) => setConfig({ slippageCents: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg bg-secondary/50 border border-border/30 text-sm"
-                          placeholder="Örn: 1"
+                          placeholder="Örn: 5"
                         />
                       </label>
                     </div>
