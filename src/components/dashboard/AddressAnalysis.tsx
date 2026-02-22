@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Clock, ArrowUpRight, ArrowDownRight, Save, Bot } from 'lucide-react';
 import { TrackedAddress, useDashboard } from '@/context/DashboardContext';
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { getWalletEventsWithStats, requestCopytradeAdvisor, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, LabelList } from 'recharts';
+import { getProfileTrades, getWalletEventsWithStats, requestCopytradeAdvisor, type ClosedTrade, type WalletTrackerEvent, type WalletTrackerStats } from '@/lib/polymarketTrackerApi';
 
 interface Props {
   address: TrackedAddress;
@@ -133,6 +133,7 @@ type SortColumn = 'label' | 'buyUsd' | 'totalUsd' | 'tradeCount';
 type SortDirection = 'asc' | 'desc';
 
 const MAX_EVENTS_FOR_CHART = 100;
+const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
 
 const resolvePriceBucketSize = (buyEventCount: number) => {
   if (buyEventCount > 10000) return 0.02;
@@ -140,6 +141,42 @@ const resolvePriceBucketSize = (buyEventCount: number) => {
   if (buyEventCount > 1500) return 0.005;
   return 0.0025;
 };
+
+const makeStackedLabelRenderer = (mode: 'won' | 'lost') => (props: {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  value?: string;
+}) => {
+  const { x = 0, y = 0, width = 0, height = 0, value = '' } = props;
+  if (!value) return null;
+
+  const segmentHeight = Math.abs(height);
+  const tiny = segmentHeight < 18;
+
+  let labelY = y + (height / 2);
+  if (tiny) {
+    labelY = mode === 'won' ? y - 8 : y + height + 12;
+  }
+
+  return (
+    <text
+      x={x + (width / 2)}
+      y={labelY}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      fill="white"
+      fontSize={12}
+      fontWeight={700}
+    >
+      {value}
+    </text>
+  );
+};
+
+const renderWonStackedLabel = makeStackedLabelRenderer('won');
+const renderLostStackedLabel = makeStackedLabelRenderer('lost');
 
 export default function AddressAnalysis({ address, onBack }: Props) {
   const { updateAddressNote } = useDashboard();
@@ -153,6 +190,8 @@ export default function AddressAnalysis({ address, onBack }: Props) {
   const [advisorError, setAdvisorError] = useState<string | null>(null);
   const [advisorResult, setAdvisorResult] = useState<string | null>(null);
   const [advisorUpdatedAt, setAdvisorUpdatedAt] = useState<string | null>(null);
+  const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
+  const [closedTradesLoading, setClosedTradesLoading] = useState(false);
 
   const advisorStorageKey = useMemo(() => `copytrade-advisor:${address.address.toLowerCase()}`, [address.address]);
 
@@ -214,6 +253,46 @@ export default function AddressAnalysis({ address, onBack }: Props) {
     };
   }, [address.address]);
 
+  useEffect(() => {
+    if (!address.profileUrl) {
+      setClosedTrades([]);
+      setClosedTradesLoading(false);
+      return;
+    }
+
+    let active = true;
+    let timeoutId: number | undefined;
+
+    const load = async () => {
+      let nextDelay = PROFILE_TRADES_REFRESH_MS;
+      try {
+        setClosedTradesLoading(true);
+        const payload = await getProfileTrades(address.profileUrl as string);
+        if (!active) return;
+        if (Array.isArray(payload.trades) && payload.trades.length > 0) {
+          setClosedTrades(payload.trades);
+        }
+        setClosedTradesLoading(payload.loading || payload.isRefreshing);
+        nextDelay = (payload.loading || payload.isRefreshing) ? 7000 : PROFILE_TRADES_REFRESH_MS;
+      } catch {
+        if (!active) return;
+        setClosedTradesLoading(false);
+        nextDelay = 15000;
+      } finally {
+        if (!active) return;
+        timeoutId = window.setTimeout(() => {
+          void load();
+        }, nextDelay);
+      }
+    };
+
+    void load();
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [address.profileUrl]);
+
   const latest30 = useMemo(() => [...events]
     .sort((a, b) => {
       const bTs = toTimestampMs(b.event_time) ?? toTimestampMs(b.seen_at_utc) ?? 0;
@@ -259,6 +338,60 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       buyPriceUsdData: sorted.map(({ price, usdSpent }) => ({ price, usdSpent })),
     };
   }, [events]);
+
+  const closedTradeAnalytics = useMemo(() => {
+    const total = closedTrades.length;
+    const wonCount = closedTrades.filter((trade) => trade.closed_result === 'Won').length;
+    const winRate = total > 0 ? (wonCount / total) * 100 : 0;
+
+    const bins = Array.from({ length: 20 }, (_, i) => {
+      const from = i * 5;
+      const to = from + 5;
+      return {
+        key: `${from}-${to}`,
+        label: `${from}-${to}¢`,
+        wonPnl: 0,
+        lostPnl: 0,
+        wonCount: 0,
+        lostCount: 0,
+      };
+    });
+
+    for (const trade of closedTrades) {
+      const cent = Number(trade.closed_cent);
+      const pnl = Number(trade.closed_pnl);
+      if (!Number.isFinite(cent) || !Number.isFinite(pnl)) continue;
+      const bounded = Math.min(99.999, Math.max(0, cent));
+      const index = Math.floor(bounded / 5);
+      const target = bins[index];
+      if (!target) continue;
+
+      if (trade.closed_result === 'Won') {
+        target.wonPnl += pnl;
+        target.wonCount += 1;
+      } else {
+        target.lostPnl += pnl;
+        target.lostCount += 1;
+      }
+    }
+
+    return {
+      total,
+      wonCount,
+      winRate,
+      bins: bins.map((bin) => {
+        const absWon = Math.abs(bin.wonPnl);
+        const absLost = Math.abs(bin.lostPnl);
+        const absTotal = absWon + absLost;
+        const wonPct = absTotal > 0 ? (absWon / absTotal) * 100 : 0;
+        const lostPct = absTotal > 0 ? (absLost / absTotal) * 100 : 0;
+        const totalCount = bin.wonCount + bin.lostCount;
+        const wonLabel = absWon > 0 ? `${wonPct.toFixed(0)}%` : '';
+        const lostLabel = absLost > 0 ? `${lostPct.toFixed(0)}%` : '';
+        return { ...bin, totalCount, wonPct, lostPct, wonLabel, lostLabel };
+      }),
+    };
+  }, [closedTrades]);
 
   const stats = useMemo(() => {
     if (backendStats) {
@@ -469,6 +602,7 @@ export default function AddressAnalysis({ address, onBack }: Props) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         {[
           { label: 'Toplam İşlem', value: String(stats.total), icon: Activity },
+          { label: 'Win Rate', value: `%${closedTradeAnalytics.winRate.toFixed(2)}`, icon: TrendingUp, color: 'text-primary' },
           { label: 'Son 24s', value: String(stats.last24h), icon: Clock },
           { label: 'BUY Today', value: formatUsd(stats.buyTodayUsd), icon: ArrowDownRight, color: 'text-accent' },
           { label: 'SELL Today', value: formatUsd(stats.sellTodayUsd), icon: ArrowUpRight, color: 'text-warning' },
@@ -481,6 +615,68 @@ export default function AddressAnalysis({ address, onBack }: Props) {
             <p className="text-lg font-bold text-foreground">{stat.value}</p>
           </div>
         ))}
+      </div>
+
+      <div className="glass-card p-4 mb-4">
+        <h3 className="text-sm font-semibold text-foreground">Stacked Bar Chart</h3>
+        <p className="text-xs text-muted-foreground mb-3">
+          X ekseni 5 cent aralıklı 20 parçaya bölünür. Y ekseninde her cent grubunun toplam closed_pnl değeri yer alır.
+        </p>
+        {closedTradesLoading && (
+          <p className="text-xs text-primary mb-3">Yükleniyor... scrape tamamlanınca grafik otomatik güncellenecek.</p>
+        )}
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={closedTradeAnalytics.bins} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+              axisLine={false}
+              tickLine={false}
+              interval={1}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <Tooltip
+              formatter={(value: number, name: string, item) => {
+                const payload = item.payload as { wonPct: number; lostPct: number; wonCount: number; lostCount: number; totalCount: number };
+                const pct = name === 'Won PnL' ? payload.wonPct : payload.lostPct;
+                const count = name === 'Won PnL' ? payload.wonCount : payload.lostCount;
+                return [`${formatUsd(Number(value))} (${pct.toFixed(2)}%) • Adet: ${count} / Toplam: ${payload.totalCount}`, name];
+              }}
+              contentStyle={{
+                backgroundColor: 'hsl(220, 18%, 10%)',
+                border: '1px solid hsl(220, 14%, 22%)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: 'hsl(210, 20%, 92%)',
+              }}
+              labelStyle={{ color: 'hsl(210, 20%, 92%)' }}
+              itemStyle={{ color: 'hsl(210, 20%, 92%)' }}
+            />
+            <Bar dataKey="wonPnl" stackId="pnl" name="Won PnL">
+              {closedTradeAnalytics.bins.map((entry) => (
+                <Cell key={`${entry.key}-won`} fill="hsl(155, 60%, 45%)" />
+              ))}
+              <LabelList
+                dataKey="wonLabel"
+                content={renderWonStackedLabel}
+              />
+            </Bar>
+            <Bar dataKey="lostPnl" stackId="pnl" name="Lost PnL">
+              {closedTradeAnalytics.bins.map((entry) => (
+                <Cell key={`${entry.key}-lost`} fill="hsl(0, 72%, 52%)" />
+              ))}
+              <LabelList
+                dataKey="lostLabel"
+                content={renderLostStackedLabel}
+              />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       </div>
 
       {/* Charts */}
