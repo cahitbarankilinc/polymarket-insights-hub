@@ -51,6 +51,17 @@ export type CopytradeAdvisorResponse = {
   model: string;
 };
 
+export type ClosedTrade = {
+  closed_market: string;
+  closed_result: 'Won' | 'Lost' | string;
+  closed_couldwon: number;
+  closed_outcome: string;
+  closed_cent: number;
+  closed_won: number;
+  closed_pnl: number;
+  closed_procent: number;
+};
+
 export type PolymarketProfileResponse = {
   proxyWallet: string;
   username?: string | null;
@@ -62,6 +73,14 @@ export type PolymarketProfileResponse = {
   pnl?: number | null;
   polygonscanUrl?: string | null;
   polygonscanTopTotalValText?: string | null;
+};
+
+export type ProfileTradesResponse = {
+  profileUrl: string;
+  username: string;
+  trades: ClosedTrade[];
+  source: 'cache' | 'scraped';
+  refreshedAt: string;
 };
 
 export async function resolvePolymarketProfile(profileUrl: string): Promise<PolymarketProfileResponse> {
@@ -152,4 +171,17 @@ export async function getMarketQuote(market: string, outcome: string): Promise<M
   }
 
   return response.json() as Promise<MarketQuote>;
+}
+
+export async function getProfileTrades(profileUrl: string): Promise<ProfileTradesResponse> {
+  const response = await fetch(`/api/tracker/profile-trades?profileUrl=${encodeURIComponent(profileUrl)}`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Profil trade verisi alınamadı');
+  }
+
+  return response.json() as Promise<ProfileTradesResponse>;
 }
