@@ -142,41 +142,6 @@ const resolvePriceBucketSize = (buyEventCount: number) => {
   return 0.0025;
 };
 
-const makeStackedLabelRenderer = (mode: 'won' | 'lost') => (props: {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  value?: string;
-}) => {
-  const { x = 0, y = 0, width = 0, height = 0, value = '' } = props;
-  if (!value) return null;
-
-  const segmentHeight = Math.abs(height);
-  const tiny = segmentHeight < 18;
-
-  let labelY = y + (height / 2);
-  if (tiny) {
-    labelY = mode === 'won' ? y - 8 : y + height + 12;
-  }
-
-  return (
-    <text
-      x={x + (width / 2)}
-      y={labelY}
-      textAnchor="middle"
-      dominantBaseline="middle"
-      fill="white"
-      fontSize={12}
-      fontWeight={700}
-    >
-      {value}
-    </text>
-  );
-};
-
-const renderWonStackedLabel = makeStackedLabelRenderer('won');
-const renderLostStackedLabel = makeStackedLabelRenderer('lost');
 
 export default function AddressAnalysis({ address, onBack }: Props) {
   const { updateAddressNote } = useDashboard();
@@ -388,7 +353,17 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         const totalCount = bin.wonCount + bin.lostCount;
         const wonLabel = absWon > 0 ? `${wonPct.toFixed(0)}%` : '';
         const lostLabel = absLost > 0 ? `${lostPct.toFixed(0)}%` : '';
-        return { ...bin, totalCount, wonPct, lostPct, wonLabel, lostLabel };
+        return {
+          ...bin,
+          totalCount,
+          wonPct,
+          lostPct,
+          wonLabel,
+          lostLabel,
+          wonPnlAbs: absWon,
+          lostPnlAbs: absLost,
+          lostPnlBackToBack: -absLost,
+        };
       }),
     };
   }, [closedTrades]);
@@ -625,27 +600,32 @@ export default function AddressAnalysis({ address, onBack }: Props) {
         {closedTradesLoading && (
           <p className="text-xs text-primary mb-3">Yükleniyor... scrape tamamlanınca grafik otomatik güncellenecek.</p>
         )}
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={closedTradeAnalytics.bins} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+        <ResponsiveContainer width="100%" height={340}>
+          <BarChart data={closedTradeAnalytics.bins} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 18%)" />
             <XAxis
-              dataKey="label"
+              type="number"
               tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
               axisLine={false}
               tickLine={false}
-              interval={1}
+              tickFormatter={(value) => formatUsd(Math.abs(Number(value)))}
             />
             <YAxis
+              type="category"
+              dataKey="label"
+              width={48}
               tick={{ fontSize: 10, fill: 'hsl(215, 12%, 50%)' }}
               axisLine={false}
               tickLine={false}
+              interval={0}
             />
             <Tooltip
               formatter={(value: number, name: string, item) => {
                 const payload = item.payload as { wonPct: number; lostPct: number; wonCount: number; lostCount: number; totalCount: number };
-                const pct = name === 'Won PnL' ? payload.wonPct : payload.lostPct;
-                const count = name === 'Won PnL' ? payload.wonCount : payload.lostCount;
-                return [`${formatUsd(Number(value))} (${pct.toFixed(2)}%) • Adet: ${count} / Toplam: ${payload.totalCount}`, name];
+                const isWon = name === 'Won PnL';
+                const pct = isWon ? payload.wonPct : payload.lostPct;
+                const count = isWon ? payload.wonCount : payload.lostCount;
+                return [`${formatUsd(Math.abs(Number(value)))} (${pct.toFixed(2)}%) • Adet: ${count} / Toplam: ${payload.totalCount}`, name];
               }}
               contentStyle={{
                 backgroundColor: 'hsl(220, 18%, 10%)',
@@ -657,23 +637,17 @@ export default function AddressAnalysis({ address, onBack }: Props) {
               labelStyle={{ color: 'hsl(210, 20%, 92%)' }}
               itemStyle={{ color: 'hsl(210, 20%, 92%)' }}
             />
-            <Bar dataKey="wonPnl" stackId="pnl" name="Won PnL">
-              {closedTradeAnalytics.bins.map((entry) => (
-                <Cell key={`${entry.key}-won`} fill="hsl(155, 60%, 45%)" />
-              ))}
-              <LabelList
-                dataKey="wonLabel"
-                content={renderWonStackedLabel}
-              />
-            </Bar>
-            <Bar dataKey="lostPnl" stackId="pnl" name="Lost PnL">
+            <Bar dataKey="lostPnlBackToBack" name="Lost PnL">
               {closedTradeAnalytics.bins.map((entry) => (
                 <Cell key={`${entry.key}-lost`} fill="hsl(0, 72%, 52%)" />
               ))}
-              <LabelList
-                dataKey="lostLabel"
-                content={renderLostStackedLabel}
-              />
+              <LabelList dataKey="lostLabel" position="insideLeft" fill="white" fontSize={11} fontWeight={700} />
+            </Bar>
+            <Bar dataKey="wonPnlAbs" name="Won PnL">
+              {closedTradeAnalytics.bins.map((entry) => (
+                <Cell key={`${entry.key}-won`} fill="hsl(155, 60%, 45%)" />
+              ))}
+              <LabelList dataKey="wonLabel" position="insideRight" fill="white" fontSize={11} fontWeight={700} />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
