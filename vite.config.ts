@@ -11,7 +11,10 @@ const MAX_EVENTS = 5000;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
+const PROFILE_TRADES_ROOT = path.resolve(process.cwd(), "tracked_profiles");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
+const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scraper.py");
+const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
@@ -72,6 +75,26 @@ type WalletEventStats = {
   sellTodayUsd: number;
 };
 
+type ClosedTrade = {
+  closed_market: string;
+  closed_result: string;
+  closed_couldwon: number;
+  closed_outcome: string;
+  closed_cent: number;
+  closed_won: number;
+  closed_pnl: number;
+  closed_procent: number;
+};
+
+type ProfileTradesPayload = {
+  username: string;
+  trades: ClosedTrade[];
+  source: "cache" | "scraped";
+  refreshedAt: string | null;
+  loading: boolean;
+  isRefreshing: boolean;
+};
+
 type TrackerState = {
   seen_ids: string[];
   seen_queue: string[];
@@ -84,6 +107,7 @@ type TrackerRuntime = {
 };
 
 const runtimes = new Map<string, TrackerRuntime>();
+const profileTradeJobs = new Map<string, Promise<void>>();
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
 
@@ -100,6 +124,136 @@ const toFloat = (value: unknown): number | null => {
 };
 
 const normalizeWallet = (address: string) => address.trim().toLowerCase();
+
+const parseProfileUsername = (profileUrl: string) => {
+  const match = profileUrl.match(/@([^?/#]+)/i);
+  return (match?.[1] ?? "unknown_user").replace(/\//g, "").toLowerCase();
+};
+
+const profileTradesPath = (username: string) => path.join(PROFILE_TRADES_ROOT, `${username}_trades.json`);
+
+const parseClosedTrade = (value: unknown): ClosedTrade | null => {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+
+  const closed_market = typeof row.closed_market === "string" ? row.closed_market : "";
+  const closed_result = typeof row.closed_result === "string" ? row.closed_result : "";
+  const closed_outcome = typeof row.closed_outcome === "string" ? row.closed_outcome : "";
+
+  return {
+    closed_market,
+    closed_result,
+    closed_outcome,
+    closed_couldwon: toFloat(row.closed_couldwon) ?? 0,
+    closed_cent: toFloat(row.closed_cent) ?? 0,
+    closed_won: toFloat(row.closed_won) ?? 0,
+    closed_pnl: toFloat(row.closed_pnl) ?? 0,
+    closed_procent: toFloat(row.closed_procent) ?? 0,
+  };
+};
+
+const runScraperForProfile = (profileUrl: string): ClosedTrade[] => {
+  const safeUrl = profileUrl.trim();
+  if (!safeUrl) throw new Error("profileUrl is required");
+
+  const username = parseProfileUsername(safeUrl);
+  const outputPath = profileTradesPath(username);
+  const candidates = ["python3", "python"] as const;
+  let lastError = "Scraper command failed";
+
+  for (const bin of candidates) {
+    const result = spawnSync(bin, [SCRAPER_SCRIPT_PATH, safeUrl], { encoding: "utf-8", cwd: process.cwd() });
+    if (result.error) {
+      lastError = result.error.message;
+      continue;
+    }
+
+    if (result.status !== 0) {
+      lastError = (result.stderr || result.stdout || `${bin} exited with ${result.status}`).trim();
+      continue;
+    }
+
+    const generatedOutputPath = path.resolve(process.cwd(), `${username}_trades.json`);
+    if (!fs.existsSync(generatedOutputPath)) {
+      throw new Error(`Scraper çıktısı bulunamadı: ${generatedOutputPath}`);
+    }
+
+    fs.copyFileSync(generatedOutputPath, outputPath);
+
+    const raw = fs.readFileSync(outputPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Scraper çıktısı geçerli bir liste değil");
+    }
+
+    return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
+  }
+
+  throw new Error(lastError);
+};
+
+const readCachedProfileTrades = (username: string): ClosedTrade[] => {
+  const raw = fs.readFileSync(profileTradesPath(username), "utf-8");
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
+};
+
+const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
+  if (profileTradeJobs.has(username)) return;
+
+  const job = Promise.resolve().then(() => {
+    runScraperForProfile(profileUrl);
+  }).catch(() => {
+    // no-op: endpoint response should continue serving cache/loading state
+  }).finally(() => {
+    profileTradeJobs.delete(username);
+  });
+
+  profileTradeJobs.set(username, job);
+};
+
+const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
+  const safeUrl = profileUrl.trim();
+  if (!safeUrl) throw new Error("profileUrl is required");
+
+  fs.mkdirSync(PROFILE_TRADES_ROOT, { recursive: true });
+  const username = parseProfileUsername(safeUrl);
+  const targetPath = profileTradesPath(username);
+  const hasFile = fs.existsSync(targetPath);
+  const hasRunningJob = profileTradeJobs.has(username);
+
+  if (!hasFile) {
+    if (!hasRunningJob) {
+      scheduleProfileTradesRefresh(username, safeUrl);
+    }
+
+    return {
+      username,
+      trades: [],
+      source: "scraped",
+      refreshedAt: null,
+      loading: true,
+      isRefreshing: true,
+    };
+  }
+
+  const stat = fs.statSync(targetPath);
+  const ageMs = Date.now() - stat.mtimeMs;
+  const stale = ageMs >= PROFILE_TRADES_REFRESH_MS;
+  if (stale && !hasRunningJob) {
+    scheduleProfileTradesRefresh(username, safeUrl);
+  }
+
+  return {
+    username,
+    trades: readCachedProfileTrades(username),
+    source: stale ? "cache" : "cache",
+    refreshedAt: stat.mtime.toISOString(),
+    loading: false,
+    isRefreshing: stale || hasRunningJob,
+  };
+};
 
 const toTimestampMs = (value: unknown): number | null => {
   if (value === null || value === undefined) return null;
@@ -513,6 +667,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
   name: "polymarket-local-tracker",
   configureServer(server) {
     fs.mkdirSync(TRACKING_ROOT, { recursive: true });
+    fs.mkdirSync(PROFILE_TRADES_ROOT, { recursive: true });
 
     server.middlewares.use(async (req, res, next) => {
       if (!req.url?.startsWith("/api/tracker")) {
@@ -544,6 +699,27 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
 
           startTracker(address);
           sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/profile-trades")) {
+          const requestUrl = new URL(req.url, "http://localhost");
+          const profileUrl = requestUrl.searchParams.get("profileUrl") ?? "";
+          if (!profileUrl.trim()) {
+            sendJson(400, { error: "profileUrl is required" });
+            return;
+          }
+
+          const payload = getProfileTradesPayload(profileUrl);
+          sendJson(200, {
+            profileUrl,
+            username: payload.username,
+            trades: payload.trades,
+            source: payload.source,
+            refreshedAt: payload.refreshedAt,
+            loading: payload.loading,
+            isRefreshing: payload.isRefreshing,
+          });
           return;
         }
 
