@@ -3,7 +3,7 @@ import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight, ArrowUp, ArrowDo
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
 import AddressAnalysis from './AddressAnalysis';
-import { getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
+import { getProfileTrades, getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
 
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
@@ -56,7 +56,7 @@ const formatPnl = (pnl?: number): string => {
   return `${pnl >= 0 ? '+' : ''}${pnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 };
 
-type SortColumn = 'wallet' | 'pnl' | 'eventCount' | 'lastActivity';
+type SortColumn = 'wallet' | 'pnl' | 'eventCount' | 'lastActivity' | 'winRate';
 type SortDirection = 'asc' | 'desc';
 
 const DEFAULT_SORT: { column: SortColumn; direction: SortDirection } = {
@@ -80,6 +80,8 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [eventsMap, setEventsMap] = useState<Record<string, WalletTrackerEvent[]>>({});
   const [sortColumn, setSortColumn] = useState<SortColumn>(DEFAULT_SORT.column);
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
+  const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
+  const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
@@ -114,6 +116,10 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         const aCount = trackerMap[aAddress]?.eventCount ?? eventsMap[aAddress]?.length ?? 0;
         const bCount = trackerMap[bAddress]?.eventCount ?? eventsMap[bAddress]?.length ?? 0;
         comparison = aCount - bCount;
+      } else if (sortColumn === 'winRate') {
+        const aRate = winRateMap[aAddress] ?? Number.NEGATIVE_INFINITY;
+        const bRate = winRateMap[bAddress] ?? Number.NEGATIVE_INFINITY;
+        comparison = aRate - bRate;
       } else {
         const aLast = toEventTimestampMs(getLatestEventForAddress(a.address)) ?? 0;
         const bLast = toEventTimestampMs(getLatestEventForAddress(b.address)) ?? 0;
@@ -124,7 +130,51 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
     });
 
     return rows;
-  }, [filtered, sortColumn, sortDirection, trackerMap, eventsMap]);
+  }, [filtered, sortColumn, sortDirection, trackerMap, eventsMap, winRateMap]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadWinRates = async () => {
+      const withProfile = addresses.filter((address) => !!address.profileUrl);
+      if (withProfile.length === 0) return;
+
+      for (const addr of withProfile) {
+        if (!active || !addr.profileUrl) break;
+        const key = addr.address.toLowerCase();
+
+        setWinRateLoadingMap((prev) => ({ ...prev, [key]: true }));
+        try {
+          const payload = await getProfileTrades(addr.profileUrl);
+          if (!active) break;
+
+          if (payload.loading || payload.trades.length === 0) {
+            setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
+          } else {
+            const won = payload.trades.filter((trade) => trade.closed_result === 'Won').length;
+            const rate = payload.trades.length > 0 ? (won / payload.trades.length) * 100 : null;
+            setWinRateMap((prev) => ({ ...prev, [key]: rate }));
+          }
+        } catch {
+          if (!active) break;
+          setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
+        } finally {
+          if (!active) break;
+          setWinRateLoadingMap((prev) => ({ ...prev, [key]: false }));
+        }
+      }
+    };
+
+    void loadWinRates();
+    const intervalId = window.setInterval(() => {
+      void loadWinRates();
+    }, 60000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [addresses]);
 
   const toggleSort = (column: SortColumn) => {
     if (column === sortColumn) {
@@ -297,6 +347,11 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                     </button>
                   </th>
                   <th className="px-4 py-3 font-medium">
+                    <button type="button" onClick={() => toggleSort('winRate')} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                      Win Rate {renderSortIcon('winRate')}
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 font-medium">
                     <button type="button" onClick={() => toggleSort('lastActivity')} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
                       Son Aktivite {renderSortIcon('lastActivity')}
                     </button>
@@ -331,6 +386,13 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">
                         {tracker?.eventCount ?? eventsMap[addr.address.toLowerCase()]?.length ?? 0}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground">
+                        {winRateLoadingMap[addr.address.toLowerCase()]
+                          ? 'Yükleniyor...'
+                          : (typeof winRateMap[addr.address.toLowerCase()] === 'number'
+                            ? `%${(winRateMap[addr.address.toLowerCase()] as number).toFixed(2)}`
+                            : '—')}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatLastActivity(latestEvent)}
