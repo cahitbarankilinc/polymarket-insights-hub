@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -9,7 +10,59 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 
-def parse_polymarket_profile(url, show_browser=False, debug_dir=None):
+BALANCE_SELECTOR = "#__next > div > div.bg-\\(--color-background\\) > nav > div.max-w-\\[1350px\\].w-full.py-3.pb-1.md\\:pb-2.z-\\[31\\].flex.gap-4.mx-auto.items-center.px-4.lg\\:px-6.justify-between.md\\:min-h-\\[68px\\] > div.shrink.min-w-0.md\\:shrink-0.md\\:min-w-fit > div > div.flex.items-center.gap-x-2.min-w-0 > div > a.text-inherit.\\[-webkit-tap-highlight-color\\:rgba\\(0\\,0\\,0\\,0\\.2\\)\\] > button > p"
+
+
+def is_logged_in(page):
+    return page.evaluate(
+        """
+        (selector) => {
+            const el = document.querySelector(selector);
+            if (!el) return false;
+            const txt = (el.textContent || '').trim();
+            return /\$\s*\d+(?:[.,]\d+)?/.test(txt);
+        }
+        """,
+        BALANCE_SELECTOR,
+    )
+
+
+def ensure_login(p, profile_dir, target_url):
+    login_context = p.chromium.launch_persistent_context(
+        user_data_dir=profile_dir,
+        headless=False,
+        viewport={"width": 1280, "height": 800},
+        slow_mo=150,
+    )
+    page = login_context.pages[0] if login_context.pages else login_context.new_page()
+    page.goto(target_url, wait_until="domcontentloaded")
+
+    print("Giriş kontrol ediliyor...")
+    if is_logged_in(page):
+        print("Oturum zaten açık. 5 saniye sonra login penceresi kapanacak.")
+        page.wait_for_timeout(5000)
+        login_context.close()
+        return
+
+    print("Oturum kapalı görünüyor. Lütfen açılan Chrome penceresinde wallet ile giriş yapın.")
+    page.wait_for_function(
+        """
+        (selector) => {
+            const el = document.querySelector(selector);
+            if (!el) return false;
+            const txt = (el.textContent || '').trim();
+            return /\$\s*\d+(?:[.,]\d+)?/.test(txt);
+        }
+        """,
+        arg=BALANCE_SELECTOR,
+        timeout=0,
+    )
+    print("Bakiye alanı görüldü. 5 saniye sonra login penceresi kapanıyor...")
+    page.wait_for_timeout(5000)
+    login_context.close()
+
+
+def parse_polymarket_profile(url, profile_dir, show_browser=False, debug_dir=None):
     parsed_items = {}
     debug_root = Path(debug_dir) if debug_dir else None
 
@@ -24,12 +77,31 @@ def parse_polymarket_profile(url, show_browser=False, debug_dir=None):
         page.screenshot(path=str(target), full_page=True)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not show_browser, slow_mo=150 if show_browser else 0)
-        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        ensure_login(p, profile_dir=profile_dir, target_url=url)
+
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            headless=not show_browser,
+            slow_mo=150 if show_browser else 0,
+            viewport={"width": 1280, "height": 800},
+        )
         page = context.new_page()
 
         print(f"Sayfa yüklendi: {url}")
         page.goto(url, wait_until="domcontentloaded")
+        if not is_logged_in(page):
+            print("Scrape öncesi oturum düşmüş. Yeniden giriş penceresi açılıyor...")
+            context.close()
+            ensure_login(p, profile_dir=profile_dir, target_url=url)
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                headless=not show_browser,
+                slow_mo=150 if show_browser else 0,
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+
         capture_debug(page, "01_loaded")
 
         try:
@@ -228,7 +300,7 @@ def parse_polymarket_profile(url, show_browser=False, debug_dir=None):
 
         finally:
             capture_debug(page, "98_before_close")
-            browser.close()
+            context.close()
 
     # Çektiğimiz verileri indeks sırasına göre sıralayıp listeye çeviriyoruz
     sorted_results = [parsed_items[k] for k in sorted(parsed_items.keys())]
@@ -240,6 +312,11 @@ def parse_args():
     parser.add_argument("url")
     parser.add_argument("--show-browser", action="store_true", help="Playwright browser penceresini görünür açar")
     parser.add_argument("--debug-dir", default="", help="Adım adım ekran görüntülerinin yazılacağı klasör")
+    parser.add_argument(
+        "--profile-dir",
+        default="",
+        help="Kalıcı Chrome profil klasörü. Boş bırakılırsa ./browser_profiles/<username> kullanılır",
+    )
     return parser.parse_args()
 
 
@@ -268,8 +345,17 @@ if __name__ == "__main__":
     print(f"Kullanıcı adı tespit edildi: {username}")
     print("\nScraping işlemi başlıyor, Chrome açılacak ve otomasyon çalışacak...\n")
 
+    profile_dir = args.profile_dir or str(Path("browser_profiles") / username)
+    os.makedirs(profile_dir, exist_ok=True)
+    print(f"Kullanılacak Chrome profili: {profile_dir}")
+
     # Kodu çalıştır
-    json_data = parse_polymarket_profile(target_url, show_browser=args.show_browser, debug_dir=args.debug_dir or None)
+    json_data = parse_polymarket_profile(
+        target_url,
+        profile_dir=profile_dir,
+        show_browser=args.show_browser,
+        debug_dir=args.debug_dir or None,
+    )
 
     data_list = json.loads(json_data)
     print(
