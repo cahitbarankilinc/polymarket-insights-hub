@@ -3,7 +3,7 @@ import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight, ArrowUp, ArrowDo
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
 import AddressAnalysis from './AddressAnalysis';
-import { getProfileTrades, getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
+import { getProfileTrades, getWalletEvents, listTrackedWallets, stopWalletTracking, type ClosedTrade, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
 
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
@@ -71,6 +71,54 @@ export interface PaperTradePrefill {
   leaderFreeBalance?: number;
 }
 
+type WinRateBucket = {
+  key: string;
+  label: string;
+  wonCount: number;
+  lostCount: number;
+  total: number;
+  wonRate: number;
+};
+
+const WIN_RATE_BUCKETS = [
+  { key: '0-15', label: '0-15¢', min: 0, max: 15 },
+  { key: '15-35', label: '15-35¢', min: 15, max: 35 },
+  { key: '35-65', label: '35-65¢', min: 35, max: 65 },
+  { key: '65-85', label: '65-85¢', min: 65, max: 85 },
+  { key: '85-100', label: '85-100¢', min: 85, max: 100 },
+] as const;
+
+const buildWinRateBuckets = (trades: ClosedTrade[]): WinRateBucket[] => {
+  const buckets = WIN_RATE_BUCKETS.map((bucket) => ({ ...bucket, wonCount: 0, lostCount: 0 }));
+
+  for (const trade of trades) {
+    const cent = Number(trade.closed_cent);
+    if (!Number.isFinite(cent)) continue;
+    const bounded = Math.max(0, Math.min(99.999, cent));
+    const bucket = buckets.find((item) => bounded >= item.min && bounded < item.max);
+    if (!bucket) continue;
+
+    if (trade.closed_result === 'Won') {
+      bucket.wonCount += 1;
+    } else {
+      bucket.lostCount += 1;
+    }
+  }
+
+  return buckets.map((bucket) => {
+    const total = bucket.wonCount + bucket.lostCount;
+    const wonRate = total > 0 ? (bucket.wonCount / total) * 100 : 0;
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      wonCount: bucket.wonCount,
+      lostCount: bucket.lostCount,
+      total,
+      wonRate,
+    };
+  });
+};
+
 export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: string, prefill?: PaperTradePrefill) => void }) {
   const { addresses, categories, removeAddress } = useDashboard();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -82,6 +130,8 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
   const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
   const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
+  const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>({});
+  const [showWinRateList, setShowWinRateList] = useState(false);
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
@@ -134,19 +184,23 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
 
   useEffect(() => {
     let active = true;
+    const requestTokenMap: Record<string, number> = {};
+    let tokenCounter = 0;
 
     const loadWinRates = async () => {
       const withProfile = addresses.filter((address) => !!address.profileUrl);
       if (withProfile.length === 0) return;
 
-      for (const addr of withProfile) {
-        if (!active || !addr.profileUrl) break;
+      await Promise.allSettled(withProfile.map(async (addr) => {
+        if (!active || !addr.profileUrl) return;
         const key = addr.address.toLowerCase();
+        const token = ++tokenCounter;
+        requestTokenMap[key] = token;
 
         setWinRateLoadingMap((prev) => ({ ...prev, [key]: true }));
         try {
           const payload = await getProfileTrades(addr.profileUrl);
-          if (!active) break;
+          if (!active || requestTokenMap[key] !== token) return;
 
           if (payload.loading || payload.trades.length === 0) {
             setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
@@ -155,14 +209,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
             const rate = payload.trades.length > 0 ? (won / payload.trades.length) * 100 : null;
             setWinRateMap((prev) => ({ ...prev, [key]: rate }));
           }
+
+          setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
         } catch {
-          if (!active) break;
+          if (!active || requestTokenMap[key] !== token) return;
           setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
         } finally {
-          if (!active) break;
+          if (!active || requestTokenMap[key] !== token) return;
           setWinRateLoadingMap((prev) => ({ ...prev, [key]: false }));
         }
-      }
+      }));
     };
 
     void loadWinRates();
@@ -310,18 +366,27 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         </div>
 
         {/* Search */}
-        <div className="relative mb-4">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Adres ara..."
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg bg-secondary/30 border border-border/30 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 transition-all"
-          />
+        <div className="mb-4 flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Adres ara..."
+              className="w-full pl-10 pr-4 py-2.5 rounded-lg bg-secondary/30 border border-border/30 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 transition-all"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowWinRateList((prev) => !prev)}
+            className={`px-3 py-2.5 rounded-lg text-sm font-medium border transition-all ${showWinRateList ? 'bg-primary/15 text-primary border-primary/40' : 'bg-secondary/40 text-muted-foreground border-border/40 hover:text-foreground'}`}
+          >
+            Win Rate Liste
+          </button>
         </div>
 
-        {/* Address List */}
-        <div className="glass-card overflow-x-auto">
+        {!showWinRateList && (
+          <div className="glass-card overflow-x-auto">
           {filtered.length === 0 && (
             <div className="p-8 text-center text-muted-foreground text-sm">
               Henüz takip edilen adres yok
@@ -445,7 +510,48 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               </tbody>
             </table>
           )}
-        </div>
+          </div>
+        )}
+
+        {showWinRateList && (
+          <div className="space-y-3">
+            {sorted.map((addr) => {
+              const key = addr.address.toLowerCase();
+              const buckets = buildWinRateBuckets(profileTradesMap[key] ?? []);
+              const winRateValue = winRateMap[key];
+
+              return (
+                <div key={addr.id} className="glass-card p-4">
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{addr.username || addr.label || `${addr.address.slice(0, 6)}...${addr.address.slice(-4)}`}</p>
+                      <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
+                    </div>
+                    <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
+                      {winRateLoadingMap[key]
+                        ? 'Yükleniyor...'
+                        : (typeof winRateValue === 'number' ? `Win Rate: %${winRateValue.toFixed(2)}` : 'Win Rate: —')}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                    {buckets.map((bucket) => {
+                      const isPositive = bucket.wonRate > 50;
+                      return (
+                        <div key={bucket.key} className={`rounded-lg border p-2 ${isPositive ? 'bg-emerald-500/15 border-emerald-400/40' : 'bg-red-500/15 border-red-400/40'}`}>
+                          <p className="text-[11px] font-semibold text-foreground mb-1">{bucket.label}</p>
+                          <p className="text-xs font-bold text-foreground">%{bucket.wonRate.toFixed(1)}</p>
+                          <p className="text-[11px] text-muted-foreground">Won: {bucket.wonCount}</p>
+                          <p className="text-[11px] text-muted-foreground">Lost: {bucket.lostCount}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
