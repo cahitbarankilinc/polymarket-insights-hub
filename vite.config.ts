@@ -7,7 +7,7 @@ import { componentTagger } from "lovable-tagger";
 import type { IncomingMessage } from "http";
 
 const POLL_INTERVAL_MS = 1000;
-const MAX_EVENTS = 5000;
+const MAX_RECENT_SEEN_IDS = 5000;
 const ACTIVITY_URL = "https://data-api.polymarket.com/activity";
 const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
@@ -341,8 +341,7 @@ const readEvents = (address: string): NormalizedEvent[] => {
           return null;
         }
       })
-      .filter((event): event is NormalizedEvent => event !== null)
-      .slice(0, MAX_EVENTS);
+      .filter((event): event is NormalizedEvent => event !== null);
   } catch {
     return [];
   }
@@ -375,9 +374,10 @@ const computeEventStats = (events: NormalizedEvent[]): WalletEventStats => {
   };
 };
 
-const writeEvents = (address: string, events: NormalizedEvent[]) => {
-  const data = events.slice(0, MAX_EVENTS).map((event) => JSON.stringify(event)).join("\n");
-  fs.writeFileSync(eventsFile(address), data ? `${data}\n` : "", "utf-8");
+const appendEvents = (address: string, events: NormalizedEvent[]) => {
+  if (events.length === 0) return;
+  const data = events.map((event) => JSON.stringify(event)).join("\n");
+  fs.appendFileSync(eventsFile(address), `${data}\n`, "utf-8");
 };
 
 const appendError = (address: string, message: string) => {
@@ -580,7 +580,6 @@ const startTracker = (address: string) => {
 
   const tick = async () => {
     const startedAt = Date.now();
-    const allEvents = readEvents(normalizedAddress);
     const seenIds = new Set(state.seen_ids);
     const seenQueue = [...state.seen_queue];
 
@@ -600,7 +599,7 @@ const startTracker = (address: string) => {
           if (seenIds.has(eventId)) continue;
           seenIds.add(eventId);
           seenQueue.push(eventId);
-          while (seenQueue.length > MAX_EVENTS) {
+          while (seenQueue.length > MAX_RECENT_SEEN_IDS) {
             const oldest = seenQueue.shift();
             if (oldest) seenIds.delete(oldest);
           }
@@ -609,7 +608,7 @@ const startTracker = (address: string) => {
       }
 
       if (newEvents.length > 0) {
-        writeEvents(normalizedAddress, [...newEvents.reverse(), ...allEvents].slice(0, MAX_EVENTS));
+        appendEvents(normalizedAddress, newEvents.reverse());
       }
 
       if (!active) return;

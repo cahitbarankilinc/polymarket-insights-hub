@@ -3,7 +3,7 @@ import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight, ArrowUp, ArrowDo
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
 import AddressAnalysis from './AddressAnalysis';
-import { getProfileTrades, getWalletEvents, listTrackedWallets, stopWalletTracking, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
+import { getProfileTrades, getWalletEvents, listTrackedWallets, stopWalletTracking, type ClosedTrade, type WalletTrackerEvent, type WalletTrackerInfo } from '@/lib/polymarketTrackerApi';
 
 
 const parseNumberFromText = (value?: string | null): number | undefined => {
@@ -56,6 +56,39 @@ const formatPnl = (pnl?: number): string => {
   return `${pnl >= 0 ? '+' : ''}${pnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 };
 
+
+
+type WinRateBucket = {
+  key: string;
+  label: string;
+  won: number;
+  lost: number;
+  wonRate: number;
+};
+
+const WIN_RATE_BUCKET_RANGES = [
+  { key: '0-15', label: '0-15¢', min: 0, max: 15 },
+  { key: '15-35', label: '15-35¢', min: 15, max: 35 },
+  { key: '35-65', label: '35-65¢', min: 35, max: 65 },
+  { key: '65-85', label: '65-85¢', min: 65, max: 85 },
+  { key: '85-100', label: '85-100¢', min: 85, max: 100.0001 },
+] as const;
+
+const buildWinRateBuckets = (trades: ClosedTrade[]): WinRateBucket[] => WIN_RATE_BUCKET_RANGES.map((range) => {
+  const inRange = trades.filter((trade) => {
+    const cent = Number(trade.closed_cent);
+    if (!Number.isFinite(cent)) return false;
+    return cent >= range.min && cent < range.max;
+  });
+
+  const won = inRange.filter((trade) => trade.closed_result === 'Won').length;
+  const lost = inRange.filter((trade) => trade.closed_result !== 'Won').length;
+  const totalCount = won + lost;
+  const wonRate = totalCount > 0 ? (won / totalCount) * 100 : 0;
+
+  return { key: range.key, label: range.label, won, lost, wonRate };
+});
+
 type SortColumn = 'wallet' | 'pnl' | 'eventCount' | 'lastActivity' | 'winRate';
 type SortDirection = 'asc' | 'desc';
 
@@ -82,6 +115,8 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
   const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
   const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
+  const [closedTradesMap, setClosedTradesMap] = useState<Record<string, ClosedTrade[]>>({});
+  const [showWinRateList, setShowWinRateList] = useState(false);
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
@@ -150,10 +185,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
 
           if (payload.loading || payload.trades.length === 0) {
             setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
+            setClosedTradesMap((prev) => ({ ...prev, [key]: prev[key] ?? [] }));
           } else {
             const won = payload.trades.filter((trade) => trade.closed_result === 'Won').length;
             const rate = payload.trades.length > 0 ? (won / payload.trades.length) * 100 : null;
             setWinRateMap((prev) => ({ ...prev, [key]: rate }));
+            setClosedTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
           }
         } catch {
           if (!active) break;
@@ -320,6 +357,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
           />
         </div>
 
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowWinRateList((prev) => !prev)}
+            className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${showWinRateList ? 'bg-primary/15 text-primary border-primary/40' : 'bg-secondary/40 text-muted-foreground border-border/40 hover:text-foreground'}`}
+          >
+            Win Rate Liste
+          </button>
+        </div>
+
         {/* Address List */}
         <div className="glass-card overflow-x-auto">
           {filtered.length === 0 && (
@@ -327,7 +374,47 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               Henüz takip edilen adres yok
             </div>
           )}
-          {filtered.length > 0 && (
+          {filtered.length > 0 && showWinRateList && (
+            <div className="p-4 space-y-3 min-w-[760px]">
+              {sorted.map((addr) => {
+                const key = addr.address.toLowerCase();
+                const rate = winRateMap[key];
+                const buckets = buildWinRateBuckets(closedTradesMap[key] ?? []);
+
+                return (
+                  <div key={addr.id} className="rounded-lg border border-border/30 bg-secondary/10 p-3">
+                    <div className="flex flex-col md:flex-row md:items-center gap-3">
+                      <div className="md:w-72 shrink-0">
+                        <p className="text-sm font-semibold text-foreground">{addr.username || addr.label || `${addr.address.slice(0, 6)}...${addr.address.slice(-4)}`}</p>
+                        <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
+                      </div>
+                      <div className="flex-1">
+                        <div className="mb-2 text-xs font-semibold text-foreground">
+                          Win Rate: {winRateLoadingMap[key] ? 'Yükleniyor...' : (typeof rate === 'number' ? `%${rate.toFixed(2)}` : '—')}
+                        </div>
+                        <div className="grid grid-cols-5 gap-2">
+                          {buckets.map((bucket) => {
+                            const isStrong = bucket.wonRate > 50;
+                            return (
+                              <div
+                                key={`${addr.id}-${bucket.key}`}
+                                className={`h-20 rounded-md border px-2 py-1.5 flex flex-col justify-between ${isStrong ? 'bg-emerald-500/15 border-emerald-500/40' : 'bg-red-500/15 border-red-500/40'}`}
+                              >
+                                <p className="text-[10px] font-semibold text-foreground">{bucket.label}</p>
+                                <p className="text-[10px] text-muted-foreground">Won {bucket.won} • Lost {bucket.lost}</p>
+                                <p className="text-[11px] font-bold text-foreground">%{bucket.wonRate.toFixed(1)}</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {filtered.length > 0 && !showWinRateList && (
             <table className="w-full min-w-[760px]">
               <thead>
                 <tr className="border-b border-border/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -399,45 +486,45 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigator.clipboard.writeText(addr.address);
-                      toast.success('Adres kopyalandı');
-                    }}
-                    className="p-2 rounded-lg hover:bg-secondary/50 text-muted-foreground hover:text-foreground transition-all"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onPaperTrade(addr.id, {
-                        sourceTradeUsd: latestEvent?.value_usd ?? undefined,
-                        sharePrice: latestEvent?.price ?? undefined,
-                        fixedShares: latestEvent?.size ?? undefined,
-                        direction: resolveDirection(latestEvent),
-                        leaderFreeBalance: parseNumberFromText(addr.polygonscanTopTotalValText),
-                      });
-                    }}
-                    className="p-2 rounded-lg hover:bg-accent/10 text-muted-foreground hover:text-accent transition-all"
-                    title="Paper Trade"
-                  >
-                    <BarChart3 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeAddress(addr.id);
-                      stopWalletTracking(addr.address);
-                      toast.success('Adres silindi');
-                    }}
-                    className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground/40 ml-1" />
-                </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(addr.address);
+                              toast.success('Adres kopyalandı');
+                            }}
+                            className="p-2 rounded-lg hover:bg-secondary/50 text-muted-foreground hover:text-foreground transition-all"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPaperTrade(addr.id, {
+                                sourceTradeUsd: latestEvent?.value_usd ?? undefined,
+                                sharePrice: latestEvent?.price ?? undefined,
+                                fixedShares: latestEvent?.size ?? undefined,
+                                direction: resolveDirection(latestEvent),
+                                leaderFreeBalance: parseNumberFromText(addr.polygonscanTopTotalValText),
+                              });
+                            }}
+                            className="p-2 rounded-lg hover:bg-accent/10 text-muted-foreground hover:text-accent transition-all"
+                            title="Paper Trade"
+                          >
+                            <BarChart3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeAddress(addr.id);
+                              stopWalletTracking(addr.address);
+                              toast.success('Adres silindi');
+                            }}
+                            className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <ChevronRight className="w-4 h-4 text-muted-foreground/40 ml-1" />
+                        </div>
                       </td>
                     </tr>
                   );
