@@ -152,7 +152,7 @@ const parseClosedTrade = (value: unknown): ClosedTrade | null => {
   };
 };
 
-const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> => {
+const runScraperForProfile = async (profileUrl: string, options?: { showBrowser?: boolean; debugDir?: string }): Promise<ClosedTrade[]> => {
   const safeUrl = profileUrl.trim();
   if (!safeUrl) throw new Error("profileUrl is required");
 
@@ -164,7 +164,11 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
   for (const bin of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl], {
+        const args = [SCRAPER_SCRIPT_PATH, safeUrl];
+        if (options?.showBrowser) args.push("--show-browser");
+        if (options?.debugDir) args.push("--debug-dir", options.debugDir);
+
+        const child = spawn(bin, args, {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -222,6 +226,25 @@ const readCachedProfileTrades = (username: string): ClosedTrade[] => {
   return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
 };
 
+
+const listDebugImages = (dir: string): string[] => {
+  try {
+    return fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".png"))
+      .sort()
+      .map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+};
+
+const runProfileScrapeDebug = async (profileUrl: string) => {
+  const username = parseProfileUsername(profileUrl);
+  const debugDir = path.join(PROFILE_TRADES_ROOT, "debug", `${username}-${Date.now()}`);
+  fs.mkdirSync(debugDir, { recursive: true });
+  const trades = await runScraperForProfile(profileUrl, { debugDir });
+  return { username, debugDir, imagePaths: listDebugImages(debugDir), tradesCount: trades.length };
+};
 const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
   if (profileTradeJobs.has(username)) return;
 
@@ -721,6 +744,19 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
 
           startTracker(address);
           sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/profile-trades-debug")) {
+          const requestUrl = new URL(req.url, "http://localhost");
+          const profileUrl = requestUrl.searchParams.get("profileUrl") ?? "";
+          if (!profileUrl.trim()) {
+            sendJson(400, { error: "profileUrl is required" });
+            return;
+          }
+
+          const payload = await runProfileScrapeDebug(profileUrl);
+          sendJson(200, payload);
           return;
         }
 
