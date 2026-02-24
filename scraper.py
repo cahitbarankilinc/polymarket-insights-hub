@@ -1,27 +1,43 @@
-import re
+import argparse
 import json
+import re
 import sys
-from playwright.sync_api import sync_playwright
+from datetime import datetime
+from pathlib import Path
+
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 
-def parse_polymarket_profile(url):
-    parsed_items = {}  # Artık işlemleri sıra numarasına (data-index) göre kaydedeceğiz.
+def parse_polymarket_profile(url, show_browser=False, debug_dir=None):
+    parsed_items = {}
+    debug_root = Path(debug_dir) if debug_dir else None
+
+    if debug_root:
+        debug_root.mkdir(parents=True, exist_ok=True)
+
+    def capture_debug(page, name):
+        if not debug_root:
+            return
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+        target = debug_root / f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}_{safe_name}.png"
+        page.screenshot(path=str(target), full_page=True)
 
     with sync_playwright() as p:
-        # Ekranı görmek için headless=False
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=not show_browser, slow_mo=150 if show_browser else 0)
         context = browser.new_context(viewport={"width": 1280, "height": 800})
         page = context.new_page()
 
         print(f"Sayfa yüklendi: {url}")
-        page.goto(url)
+        page.goto(url, wait_until="domcontentloaded")
+        capture_debug(page, "01_loaded")
 
         try:
             # 1. "Closed" butonuna tıkla
             print("'Closed' sekmesine geçiliyor...")
             page.get_by_role("button", name="Closed").click()
             page.wait_for_timeout(2000)
+            capture_debug(page, "02_closed_tab")
 
             # 2. Sort dropdown'unu bul ve tıkla
             print("Sıralama menüsü açılıyor...")
@@ -32,11 +48,13 @@ def parse_polymarket_profile(url):
             )
             sort_btn.click()
             page.wait_for_timeout(1000)
+            capture_debug(page, "03_sort_menu")
 
             # 3. "Date" seçeneğini seç
             print("'Date' seçeneğine tıklanıyor...")
             page.get_by_role("menuitem", name="Date").click()
             page.wait_for_timeout(3000)
+            capture_debug(page, "04_sorted_by_date")
 
             # 4. Tüm listeyi açmak için "Show more positions" butonuna tıklama döngüsü
             print("Sayfanın sonuna kadar 'Show more positions' butonları aranıyor...")
@@ -50,6 +68,7 @@ def parse_polymarket_profile(url):
                     print(f"[{i+1}/15] Buton bulundu ve tıklanıyor...")
                     btn.click()
                     page.wait_for_timeout(2500)
+                    capture_debug(page, f"05_show_more_{i+1}")
                 else:
                     # Göremiyorsak biraz aşağı kaydır
                     page.mouse.wheel(0, 1000)
@@ -63,6 +82,7 @@ def parse_polymarket_profile(url):
                         print(f"[{i+1}/15] Buton bulundu ve tıklanıyor...")
                         btn.click()
                         page.wait_for_timeout(2500)
+                        capture_debug(page, f"05_show_more_scroll_{i+1}")
                     elif i > 3:
                         # Eğer birkaç denemedir çıkmıyorsa liste tamamen açılmıştır
                         break
@@ -74,6 +94,7 @@ def parse_polymarket_profile(url):
                 page.mouse.wheel(0, -2000)
                 page.wait_for_timeout(100)
             page.wait_for_timeout(2000)
+            capture_debug(page, "06_scrolled_top")
 
             print(
                 "Sanal kaydırma (Virtual Scroll) başlatılıyor. Her bir satır (data-index) toplanacak..."
@@ -197,12 +218,16 @@ def parse_polymarket_profile(url):
 
                 # Yukarıdan aşağı doğru Virtual Scroll yakalamak için kontrollü inme
                 page.mouse.wheel(0, 300)
+                if step % 30 == 0:
+                    capture_debug(page, f"07_virtual_scroll_step_{step}")
                 page.wait_for_timeout(200)
 
         except Exception as e:
             print(f"İşlem sırasında hata oluştu: {e}")
+            capture_debug(page, "99_error_state")
 
         finally:
+            capture_debug(page, "98_before_close")
             browser.close()
 
     # Çektiğimiz verileri indeks sırasına göre sıralayıp listeye çeviriyoruz
@@ -210,17 +235,18 @@ def parse_polymarket_profile(url):
     return json.dumps(sorted_results, indent=4, ensure_ascii=False)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("url")
+    parser.add_argument("--show-browser", action="store_true", help="Playwright browser penceresini görünür açar")
+    parser.add_argument("--debug-dir", default="", help="Adım adım ekran görüntülerinin yazılacağı klasör")
+    return parser.parse_args()
+
+
 # ÇALIŞTIRMA KISMI
 if __name__ == "__main__":
-    # 1. Terminalden link girilmiş mi kontrol et
-    if len(sys.argv) < 2:
-        print("HATA: Lütfen bir URL girin!")
-        print(
-            "Kullanım: python scraper.py https://polymarket.com/@swisstony?tab=activity"
-        )
-        sys.exit(1)
-
-    input_url = sys.argv[1]
+    args = parse_args()
+    input_url = args.url
 
     # 2. Kullanıcı adını '@' ile '?' arasından çek
     # Örneğin: https://polymarket.com/@swisstony?tab=activity -> swisstony
@@ -243,7 +269,7 @@ if __name__ == "__main__":
     print("\nScraping işlemi başlıyor, Chrome açılacak ve otomasyon çalışacak...\n")
 
     # Kodu çalıştır
-    json_data = parse_polymarket_profile(target_url)
+    json_data = parse_polymarket_profile(target_url, show_browser=args.show_browser, debug_dir=args.debug_dir or None)
 
     data_list = json.loads(json_data)
     print(

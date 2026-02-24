@@ -75,6 +75,25 @@ export type PolymarketProfileResponse = {
   polygonscanTopTotalValText?: string | null;
 };
 
+
+export type ProfileTradesDebugResponse = {
+  username: string;
+  debugDir: string;
+  imagePaths: string[];
+  tradesCount: number;
+};
+
+export type ProfileTradesProgressResponse = {
+  username: string;
+  status: "idle" | "running" | "success" | "error";
+  startedAt: string | null;
+  finishedAt: string | null;
+  logs: string[];
+  error: string | null;
+  debugDir: string | null;
+  imagePaths: string[];
+};
+
 export type ProfileTradesResponse = {
   profileUrl: string;
   username: string;
@@ -186,4 +205,47 @@ export async function getProfileTrades(profileUrl: string): Promise<ProfileTrade
   }
 
   return response.json() as Promise<ProfileTradesResponse>;
+}
+
+
+export async function debugProfileTrades(profileUrl: string): Promise<ProfileTradesDebugResponse> {
+  const response = await fetch(`/api/tracker/profile-trades-debug?profileUrl=${encodeURIComponent(profileUrl)}`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Profil debug scrape alınamadı');
+  }
+
+  return response.json() as Promise<ProfileTradesDebugResponse>;
+}
+
+
+export async function startDebugProfileTrades(profileUrl: string): Promise<{ ok: boolean; username: string }> {
+  const response = await fetch('/api/tracker/profile-trades-debug/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profileUrl }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Profil debug scrape başlatılamadı');
+  }
+
+  return response.json() as Promise<{ ok: boolean; username: string }>;
+}
+
+export async function getProfileTradesProgress(profileUrl: string): Promise<ProfileTradesProgressResponse> {
+  const response = await fetch(`/api/tracker/profile-trades-progress?profileUrl=${encodeURIComponent(profileUrl)}`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Profil scrape progress alınamadı');
+  }
+
+  return response.json() as Promise<ProfileTradesProgressResponse>;
 }

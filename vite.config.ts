@@ -108,6 +108,21 @@ type TrackerRuntime = {
 
 const runtimes = new Map<string, TrackerRuntime>();
 const profileTradeJobs = new Map<string, Promise<void>>();
+const profileTradeDebugJobs = new Map<string, Promise<void>>();
+
+type ProfileScrapeProgress = {
+  username: string;
+  status: "idle" | "running" | "success" | "error";
+  startedAt: string | null;
+  finishedAt: string | null;
+  logs: string[];
+  error: string | null;
+  debugDir: string | null;
+  imagePaths: string[];
+};
+
+const profileScrapeProgress = new Map<string, ProfileScrapeProgress>();
+const MAX_SCRAPE_LOG_LINES = 200;
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
 
@@ -152,7 +167,7 @@ const parseClosedTrade = (value: unknown): ClosedTrade | null => {
   };
 };
 
-const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> => {
+const runScraperForProfile = async (profileUrl: string, options?: { showBrowser?: boolean; debugDir?: string; onLog?: (line: string) => void }): Promise<ClosedTrade[]> => {
   const safeUrl = profileUrl.trim();
   if (!safeUrl) throw new Error("profileUrl is required");
 
@@ -164,7 +179,11 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
   for (const bin of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl], {
+        const args = [SCRAPER_SCRIPT_PATH, safeUrl];
+        if (options?.showBrowser) args.push("--show-browser");
+        if (options?.debugDir) args.push("--debug-dir", options.debugDir);
+
+        const child = spawn(bin, args, {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -173,10 +192,14 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
         let stdout = "";
 
         child.stdout.on("data", (chunk) => {
-          stdout += chunk.toString();
+          const line = chunk.toString();
+          stdout += line;
+          options?.onLog?.(line);
         });
         child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString();
+          const line = chunk.toString();
+          stderr += line;
+          options?.onLog?.(line);
         });
 
         child.on("error", (error) => {
@@ -222,13 +245,114 @@ const readCachedProfileTrades = (username: string): ClosedTrade[] => {
   return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
 };
 
+
+const listDebugImages = (dir: string): string[] => {
+  try {
+    return fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".png"))
+      .sort()
+      .map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+};
+
+
+const appendScrapeLog = (username: string, line: string) => {
+  const progress = profileScrapeProgress.get(username);
+  if (!progress) return;
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  progress.logs.push(`[${new Date().toISOString()}] ${trimmed}`);
+  if (progress.logs.length > MAX_SCRAPE_LOG_LINES) {
+    progress.logs = progress.logs.slice(progress.logs.length - MAX_SCRAPE_LOG_LINES);
+  }
+};
+
+const startScrapeProgress = (username: string, debugDir: string | null = null) => {
+  profileScrapeProgress.set(username, {
+    username,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    logs: ["Scrape başlatıldı"],
+    error: null,
+    debugDir,
+    imagePaths: [],
+  });
+};
+
+const finalizeScrapeProgress = (username: string, status: "success" | "error", error: string | null = null, debugDir: string | null = null) => {
+  const progress = profileScrapeProgress.get(username);
+  if (!progress) return;
+  progress.status = status;
+  progress.finishedAt = new Date().toISOString();
+  progress.error = error;
+  if (debugDir) {
+    progress.debugDir = debugDir;
+    progress.imagePaths = listDebugImages(debugDir);
+  }
+};
+
+const getScrapeProgressPayload = (profileUrl: string) => {
+  const username = parseProfileUsername(profileUrl);
+  const progress = profileScrapeProgress.get(username);
+  if (!progress) {
+    return {
+      username,
+      status: "idle",
+      startedAt: null,
+      finishedAt: null,
+      logs: [],
+      error: null,
+      debugDir: null,
+      imagePaths: [],
+    };
+  }
+  return progress;
+};
+
+const runProfileScrapeDebug = async (profileUrl: string) => {
+  const username = parseProfileUsername(profileUrl);
+  const debugDir = path.join(PROFILE_TRADES_ROOT, "debug", `${username}-${Date.now()}`);
+  fs.mkdirSync(debugDir, { recursive: true });
+  startScrapeProgress(username, debugDir);
+  try {
+    const trades = await runScraperForProfile(profileUrl, { debugDir, onLog: (line) => appendScrapeLog(username, line) });
+    finalizeScrapeProgress(username, "success", null, debugDir);
+    return { username, debugDir, imagePaths: listDebugImages(debugDir), tradesCount: trades.length };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendScrapeLog(username, `ERROR: ${message}`);
+    finalizeScrapeProgress(username, "error", message, debugDir);
+    throw error;
+  }
+};
+
+const startProfileScrapeDebugJob = (profileUrl: string) => {
+  const username = parseProfileUsername(profileUrl);
+  if (profileTradeDebugJobs.has(username)) return;
+
+  const job = Promise.resolve().then(async () => {
+    await runProfileScrapeDebug(profileUrl);
+  }).finally(() => {
+    profileTradeDebugJobs.delete(username);
+  });
+
+  profileTradeDebugJobs.set(username, job);
+};
+
 const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
   if (profileTradeJobs.has(username)) return;
 
   const job = Promise.resolve().then(async () => {
-    await runScraperForProfile(profileUrl);
-  }).catch(() => {
-    // no-op: endpoint response should continue serving cache/loading state
+    startScrapeProgress(username);
+    await runScraperForProfile(profileUrl, { onLog: (line) => appendScrapeLog(username, line) });
+    finalizeScrapeProgress(username, "success");
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    appendScrapeLog(username, `ERROR: ${message}`);
+    finalizeScrapeProgress(username, "error", message);
   }).finally(() => {
     profileTradeJobs.delete(username);
   });
@@ -721,6 +845,44 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
 
           startTracker(address);
           sendJson(200, { ok: true, address, storagePath: walletDir(address) });
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/api/tracker/profile-trades-debug/start") {
+          const parsed = await readJsonBody<{ profileUrl?: string }>(req);
+          const profileUrl = parsed.profileUrl ?? "";
+          if (!profileUrl.trim()) {
+            sendJson(400, { error: "profileUrl is required" });
+            return;
+          }
+
+          startProfileScrapeDebugJob(profileUrl);
+          sendJson(202, { ok: true, username: parseProfileUsername(profileUrl) });
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/profile-trades-debug")) {
+          const requestUrl = new URL(req.url, "http://localhost");
+          const profileUrl = requestUrl.searchParams.get("profileUrl") ?? "";
+          if (!profileUrl.trim()) {
+            sendJson(400, { error: "profileUrl is required" });
+            return;
+          }
+
+          const payload = await runProfileScrapeDebug(profileUrl);
+          sendJson(200, payload);
+          return;
+        }
+
+        if (req.method === "GET" && req.url?.startsWith("/api/tracker/profile-trades-progress")) {
+          const requestUrl = new URL(req.url, "http://localhost");
+          const profileUrl = requestUrl.searchParams.get("profileUrl") ?? "";
+          if (!profileUrl.trim()) {
+            sendJson(400, { error: "profileUrl is required" });
+            return;
+          }
+
+          sendJson(200, getScrapeProgressPayload(profileUrl));
           return;
         }
 
