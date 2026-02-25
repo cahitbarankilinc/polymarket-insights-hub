@@ -13,7 +13,8 @@ const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_TRADES_ROOT = path.resolve(process.cwd(), "tracked_profiles");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
-const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scraper.py");
+const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scrapernew.py");
+const SCRAPER_PROFILE_DIR = (process.env.POLYMARKET_SCRAPER_PROFILE_DIR ?? path.resolve(process.cwd(), "browser_profiles", "default")).trim();
 const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
@@ -161,10 +162,12 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
   const candidates = ["python3", "python"] as const;
   let lastError = "Scraper command failed";
 
+  fs.mkdirSync(SCRAPER_PROFILE_DIR, { recursive: true });
+
   for (const bin of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl], {
+        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", SCRAPER_PROFILE_DIR], {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
