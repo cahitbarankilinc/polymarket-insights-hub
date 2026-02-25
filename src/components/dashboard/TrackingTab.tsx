@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
@@ -129,9 +129,10 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [sortColumn, setSortColumn] = useState<SortColumn>(DEFAULT_SORT.column);
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
   const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
-  const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
+  const [winRateStatusMap, setWinRateStatusMap] = useState<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
   const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>({});
   const [showWinRateList, setShowWinRateList] = useState(false);
+  const processedWinRateWalletsRef = useRef<Set<string>>(new Set());
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
@@ -184,23 +185,35 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
 
   useEffect(() => {
     let active = true;
-    const requestTokenMap: Record<string, number> = {};
-    let tokenCounter = 0;
 
     const loadWinRates = async () => {
       const withProfile = addresses.filter((address) => !!address.profileUrl);
       if (withProfile.length === 0) return;
 
-      await Promise.allSettled(withProfile.map(async (addr) => {
+      const allowedKeys = new Set(withProfile.map((addr) => addr.address.toLowerCase()));
+      processedWinRateWalletsRef.current = new Set(
+        [...processedWinRateWalletsRef.current].filter((key) => allowedKeys.has(key)),
+      );
+
+      setWinRateStatusMap((prev) => {
+        const next: Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'> = {};
+        for (const key of allowedKeys) {
+          next[key] = prev[key] ?? 'beklemede';
+        }
+        return next;
+      });
+
+      const queue = withProfile.filter((addr) => !processedWinRateWalletsRef.current.has(addr.address.toLowerCase()));
+      if (queue.length === 0) return;
+
+      for (const addr of queue) {
         if (!active || !addr.profileUrl) return;
         const key = addr.address.toLowerCase();
-        const token = ++tokenCounter;
-        requestTokenMap[key] = token;
 
-        setWinRateLoadingMap((prev) => ({ ...prev, [key]: true }));
+        setWinRateStatusMap((prev) => ({ ...prev, [key]: 'yükleniyor' }));
         try {
           const payload = await getProfileTrades(addr.profileUrl);
-          if (!active || requestTokenMap[key] !== token) return;
+          if (!active) return;
 
           if (payload.loading || payload.trades.length === 0) {
             setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
@@ -211,24 +224,20 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
           }
 
           setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
+          setWinRateStatusMap((prev) => ({ ...prev, [key]: 'tamamlandi' }));
         } catch {
-          if (!active || requestTokenMap[key] !== token) return;
-          setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
-        } finally {
-          if (!active || requestTokenMap[key] !== token) return;
-          setWinRateLoadingMap((prev) => ({ ...prev, [key]: false }));
+          if (!active) return;
+          setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
         }
-      }));
+
+        processedWinRateWalletsRef.current.add(key);
+      }
     };
 
     void loadWinRates();
-    const intervalId = window.setInterval(() => {
-      void loadWinRates();
-    }, 60000);
 
     return () => {
       active = false;
-      window.clearInterval(intervalId);
     };
   }, [addresses]);
 
@@ -453,8 +462,8 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                         {tracker?.eventCount ?? eventsMap[addr.address.toLowerCase()]?.length ?? 0}
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">
-                        {winRateLoadingMap[addr.address.toLowerCase()]
-                          ? 'Yükleniyor...'
+                        {(winRateStatusMap[addr.address.toLowerCase()] === 'yükleniyor' || winRateStatusMap[addr.address.toLowerCase()] === 'beklemede' || winRateStatusMap[addr.address.toLowerCase()] === 'hata')
+                          ? winRateStatusMap[addr.address.toLowerCase()]
                           : (typeof winRateMap[addr.address.toLowerCase()] === 'number'
                             ? `%${(winRateMap[addr.address.toLowerCase()] as number).toFixed(2)}`
                             : '—')}
@@ -519,6 +528,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               const key = addr.address.toLowerCase();
               const buckets = buildWinRateBuckets(profileTradesMap[key] ?? []);
               const winRateValue = winRateMap[key];
+              const status = winRateStatusMap[key] ?? 'beklemede';
 
               return (
                 <div key={addr.id} className="glass-card p-4">
@@ -528,9 +538,9 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
                     </div>
                     <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
-                      {winRateLoadingMap[key]
-                        ? 'Yükleniyor...'
-                        : (typeof winRateValue === 'number' ? `Win Rate: %${winRateValue.toFixed(2)}` : 'Win Rate: —')}
+                      {status === 'tamamlandi'
+                        ? (typeof winRateValue === 'number' ? `tamamlandi · Win Rate: %${winRateValue.toFixed(2)}` : 'tamamlandi')
+                        : status}
                     </p>
                   </div>
 
