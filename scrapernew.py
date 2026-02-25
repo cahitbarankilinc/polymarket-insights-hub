@@ -283,7 +283,7 @@ def parse_polymarket_profile(url, profile_dir, show_browser=False, debug_dir=Non
             # ✅ Satırlar bu container içinde; ama scroll window'da
             page.wait_for_selector(TABLE_CONTAINER_SELECTOR, timeout=15000)
 
-            TARGET_COUNT = 200
+            TARGET_COUNT = 500
             print(
                 f"Toplaya toplaya kaydırma başlıyor. {TARGET_COUNT} işleme ulaşınca duracak..."
             )
