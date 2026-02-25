@@ -129,7 +129,8 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [sortColumn, setSortColumn] = useState<SortColumn>(DEFAULT_SORT.column);
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
   const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
-  const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
+  const [scrapeStatusMap, setScrapeStatusMap] = useState<Record<string, 'pending' | 'loading' | 'error' | 'completed'>>({});
+  const [scrapeErrorMap, setScrapeErrorMap] = useState<Record<string, string | null>>({});
   const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>({});
   const [showWinRateList, setShowWinRateList] = useState(false);
 
@@ -184,41 +185,38 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
 
   useEffect(() => {
     let active = true;
-    const requestTokenMap: Record<string, number> = {};
-    let tokenCounter = 0;
 
     const loadWinRates = async () => {
       const withProfile = addresses.filter((address) => !!address.profileUrl);
       if (withProfile.length === 0) return;
 
-      await Promise.allSettled(withProfile.map(async (addr) => {
-        if (!active || !addr.profileUrl) return;
-        const key = addr.address.toLowerCase();
-        const token = ++tokenCounter;
-        requestTokenMap[key] = token;
+      for (const addr of withProfile) {
+        if (!active || !addr.profileUrl) break;
 
-        setWinRateLoadingMap((prev) => ({ ...prev, [key]: true }));
+        const key = addr.address.toLowerCase();
         try {
           const payload = await getProfileTrades(addr.profileUrl);
-          if (!active || requestTokenMap[key] !== token) return;
+          if (!active) break;
 
-          if (payload.loading || payload.trades.length === 0) {
-            setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
-          } else {
+          setScrapeStatusMap((prev) => ({ ...prev, [key]: payload.scrapeStatus }));
+          setScrapeErrorMap((prev) => ({ ...prev, [key]: payload.scrapeError }));
+
+          if (payload.scrapeStatus === 'completed' && payload.trades.length > 0) {
             const won = payload.trades.filter((trade) => trade.closed_result === 'Won').length;
-            const rate = payload.trades.length > 0 ? (won / payload.trades.length) * 100 : null;
+            const rate = (won / payload.trades.length) * 100;
             setWinRateMap((prev) => ({ ...prev, [key]: rate }));
+          } else if (payload.scrapeStatus === 'completed' && payload.trades.length === 0) {
+            setWinRateMap((prev) => ({ ...prev, [key]: null }));
           }
 
           setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
         } catch {
-          if (!active || requestTokenMap[key] !== token) return;
+          if (!active) break;
+          setScrapeStatusMap((prev) => ({ ...prev, [key]: 'error' }));
+          setScrapeErrorMap((prev) => ({ ...prev, [key]: 'Profil trade verisi alınamadı' }));
           setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
-        } finally {
-          if (!active || requestTokenMap[key] !== token) return;
-          setWinRateLoadingMap((prev) => ({ ...prev, [key]: false }));
         }
-      }));
+      }
     };
 
     void loadWinRates();
@@ -245,6 +243,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const renderSortIcon = (column: SortColumn) => {
     if (sortColumn !== column) return <ArrowUpDown className="w-3 h-3" />;
     return sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />;
+  };
+
+  const getScrapeStatusLabel = (address: string): string => {
+    const key = address.toLowerCase();
+    const status = scrapeStatusMap[key];
+    if (status === 'loading') return 'Yükleniyor';
+    if (status === 'pending') return 'Beklemede';
+    if (status === 'error') return 'Hata';
+    if (status === 'completed') return 'Tamamlandı';
+    return 'Beklemede';
   };
 
   useEffect(() => {
@@ -453,11 +461,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                         {tracker?.eventCount ?? eventsMap[addr.address.toLowerCase()]?.length ?? 0}
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">
-                        {winRateLoadingMap[addr.address.toLowerCase()]
-                          ? 'Yükleniyor...'
-                          : (typeof winRateMap[addr.address.toLowerCase()] === 'number'
-                            ? `%${(winRateMap[addr.address.toLowerCase()] as number).toFixed(2)}`
-                            : '—')}
+                        {(() => {
+                          const key = addr.address.toLowerCase();
+                          const status = scrapeStatusMap[key];
+                          if (status === 'loading') return 'Yükleniyor';
+                          if (status === 'pending') return 'Beklemede';
+                          if (status === 'error') return 'Hata';
+                          return typeof winRateMap[key] === 'number'
+                            ? `%${(winRateMap[key] as number).toFixed(2)}`
+                            : '—';
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatLastActivity(latestEvent)}
@@ -527,11 +540,14 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       <p className="text-sm font-semibold text-foreground">{addr.username || addr.label || `${addr.address.slice(0, 6)}...${addr.address.slice(-4)}`}</p>
                       <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
                     </div>
-                    <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
-                      {winRateLoadingMap[key]
-                        ? 'Yükleniyor...'
-                        : (typeof winRateValue === 'number' ? `Win Rate: %${winRateValue.toFixed(2)}` : 'Win Rate: —')}
-                    </p>
+                    <div className="text-right">
+                      <p className="text-sm font-semibold text-primary min-w-[95px]">
+                        {typeof winRateValue === 'number' ? `Win Rate: %${winRateValue.toFixed(2)}` : 'Win Rate: —'}
+                      </p>
+                      <p className={`text-xs ${scrapeStatusMap[key] === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={scrapeErrorMap[key] ?? undefined}>
+                        Durum: {getScrapeStatusLabel(addr.address)}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-2">

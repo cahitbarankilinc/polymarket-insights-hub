@@ -13,7 +13,8 @@ const TRADES_URL = "https://data-api.polymarket.com/trades";
 const TRACKING_ROOT = path.resolve(process.cwd(), "tracked_wallets");
 const PROFILE_TRADES_ROOT = path.resolve(process.cwd(), "tracked_profiles");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
-const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scraper.py");
+const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scrapernew.py");
+const SCRAPER_PROFILE_DIR = (process.env.POLYMARKET_SCRAPER_PROFILE_DIR ?? path.resolve(process.cwd(), "browser_profiles", "default")).trim();
 const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
@@ -93,6 +94,8 @@ type ProfileTradesPayload = {
   refreshedAt: string | null;
   loading: boolean;
   isRefreshing: boolean;
+  scrapeStatus: "pending" | "loading" | "error" | "completed";
+  scrapeError: string | null;
 };
 
 type TrackerState = {
@@ -108,6 +111,11 @@ type TrackerRuntime = {
 
 const runtimes = new Map<string, TrackerRuntime>();
 const profileTradeJobs = new Map<string, Promise<void>>();
+const profileTradeQueue: Array<{ username: string; profileUrl: string }> = [];
+const profileTradeQueued = new Set<string>();
+const profileTradeErrors = new Map<string, string>();
+let activeProfileTradeJob: { username: string; profileUrl: string } | null = null;
+let profileTradeWorker: Promise<void> | null = null;
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
 
@@ -161,10 +169,12 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
   const candidates = ["python3", "python"] as const;
   let lastError = "Scraper command failed";
 
+  fs.mkdirSync(SCRAPER_PROFILE_DIR, { recursive: true });
+
   for (const bin of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl], {
+        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", SCRAPER_PROFILE_DIR], {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -222,18 +232,48 @@ const readCachedProfileTrades = (username: string): ClosedTrade[] => {
   return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
 };
 
-const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
-  if (profileTradeJobs.has(username)) return;
+const isProfileTradeQueued = (username: string) => profileTradeQueued.has(username);
+const isProfileTradeRunning = (username: string) => activeProfileTradeJob?.username === username;
 
-  const job = Promise.resolve().then(async () => {
-    await runScraperForProfile(profileUrl);
-  }).catch(() => {
-    // no-op: endpoint response should continue serving cache/loading state
-  }).finally(() => {
-    profileTradeJobs.delete(username);
+const runProfileTradeQueue = () => {
+  if (profileTradeWorker) return;
+
+  profileTradeWorker = (async () => {
+    while (profileTradeQueue.length > 0) {
+      const nextJob = profileTradeQueue.shift();
+      if (!nextJob) continue;
+
+      const { username, profileUrl } = nextJob;
+      profileTradeQueued.delete(username);
+      activeProfileTradeJob = nextJob;
+
+      const runningPromise = runScraperForProfile(profileUrl)
+        .then(() => {
+          profileTradeErrors.delete(username);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          profileTradeErrors.set(username, message);
+        });
+
+      profileTradeJobs.set(username, runningPromise);
+      await runningPromise;
+      profileTradeJobs.delete(username);
+      activeProfileTradeJob = null;
+    }
+  })().finally(() => {
+    profileTradeWorker = null;
+    if (profileTradeQueue.length > 0) {
+      runProfileTradeQueue();
+    }
   });
+};
 
-  profileTradeJobs.set(username, job);
+const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
+  if (isProfileTradeRunning(username) || isProfileTradeQueued(username)) return;
+  profileTradeQueue.push({ username, profileUrl });
+  profileTradeQueued.add(username);
+  runProfileTradeQueue();
 };
 
 const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
@@ -244,29 +284,39 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
   const username = parseProfileUsername(safeUrl);
   const targetPath = profileTradesPath(username);
   const hasFile = fs.existsSync(targetPath);
-  const hasRunningJob = profileTradeJobs.has(username);
+  const hasRunningJob = isProfileTradeRunning(username);
+  const isQueued = isProfileTradeQueued(username);
+  const scrapeError = profileTradeErrors.get(username) ?? null;
 
   if (!hasFile) {
-    if (!hasRunningJob) {
+    if (!hasRunningJob && !isQueued) {
       scheduleProfileTradesRefresh(username, safeUrl);
     }
+
+    const currentlyRunning = isProfileTradeRunning(username);
+    const currentlyQueued = isProfileTradeQueued(username);
 
     return {
       username,
       trades: [],
       source: "scraped",
       refreshedAt: null,
-      loading: true,
-      isRefreshing: true,
+      loading: currentlyRunning || currentlyQueued,
+      isRefreshing: currentlyRunning || currentlyQueued,
+      scrapeStatus: currentlyRunning ? "loading" : (currentlyQueued ? "pending" : (scrapeError ? "error" : "pending")),
+      scrapeError,
     };
   }
 
   const stat = fs.statSync(targetPath);
   const ageMs = Date.now() - stat.mtimeMs;
   const stale = ageMs >= PROFILE_TRADES_REFRESH_MS;
-  if (stale && !hasRunningJob) {
+  if (stale && !hasRunningJob && !isQueued) {
     scheduleProfileTradesRefresh(username, safeUrl);
   }
+
+  const currentlyRunning = isProfileTradeRunning(username);
+  const currentlyQueued = isProfileTradeQueued(username);
 
   return {
     username,
@@ -274,7 +324,11 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
     source: stale ? "cache" : "cache",
     refreshedAt: stat.mtime.toISOString(),
     loading: false,
-    isRefreshing: stale || hasRunningJob,
+    isRefreshing: stale || currentlyRunning || currentlyQueued,
+    scrapeStatus: currentlyRunning
+      ? "loading"
+      : (currentlyQueued ? "pending" : (scrapeError ? "error" : "completed")),
+    scrapeError,
   };
 };
 
