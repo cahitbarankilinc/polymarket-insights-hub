@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 
 export interface TrackedAddress {
   id: string;
@@ -86,6 +86,37 @@ interface DashboardContextType {
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined);
 
 const DEFAULT_CATEGORIES = ['Whales', 'Smart Money', 'Market Makers', 'Influencers', 'DeFi Protocols'];
+const DASHBOARD_STORAGE_KEY = 'pm-dashboard-state-v1';
+
+type DashboardPersistedState = {
+  addresses: Array<Omit<TrackedAddress, 'addedAt'> & { addedAt: string }>;
+  categories: string[];
+};
+
+const readPersistedDashboardState = (): DashboardPersistedState | null => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DashboardPersistedState>;
+    if (!Array.isArray(parsed.addresses) || !Array.isArray(parsed.categories)) return null;
+
+    return {
+      addresses: parsed.addresses
+        .filter((item): item is Omit<TrackedAddress, 'addedAt'> & { addedAt: string } => (
+          !!item
+          && typeof item.id === 'string'
+          && typeof item.address === 'string'
+          && typeof item.category === 'string'
+          && typeof item.addedAt === 'string'
+        )),
+      categories: parsed.categories.filter((item): item is string => typeof item === 'string' && item.trim().length > 0),
+    };
+  } catch {
+    return null;
+  }
+};
 
 // Mock price generation
 const randomPrice = () => +(Math.random() * 100000 + 20000).toFixed(2);
@@ -98,8 +129,22 @@ const createTradeId = () => {
 };
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
-  const [addresses, setAddresses] = useState<TrackedAddress[]>([]);
-  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
+  const [addresses, setAddresses] = useState<TrackedAddress[]>(() => {
+    const persisted = readPersistedDashboardState();
+    if (!persisted) return [];
+
+    return persisted.addresses.map((item) => ({
+      ...item,
+      addedAt: new Date(item.addedAt),
+    }));
+  });
+  const [categories, setCategories] = useState<string[]>(() => {
+    const persisted = readPersistedDashboardState();
+    if (!persisted) return DEFAULT_CATEGORIES;
+
+    const merged = [...new Set([...DEFAULT_CATEGORIES, ...persisted.categories])];
+    return merged;
+  });
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
   const [paperBudget, setPaperBudgetState] = useState<PaperBudget>({
     mode: 'unlimited',
@@ -237,6 +282,20 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         : t
     )));
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const payload: DashboardPersistedState = {
+      addresses: addresses.map((item) => ({
+        ...item,
+        addedAt: item.addedAt.toISOString(),
+      })),
+      categories,
+    };
+
+    window.localStorage.setItem(DASHBOARD_STORAGE_KEY, JSON.stringify(payload));
+  }, [addresses, categories]);
 
   return (
     <DashboardContext.Provider value={{
