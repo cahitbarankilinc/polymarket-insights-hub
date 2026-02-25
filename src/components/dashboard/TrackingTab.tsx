@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Filter, Trash2, BarChart3, Copy, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 import { toast } from 'sonner';
@@ -88,6 +88,30 @@ const WIN_RATE_BUCKETS = [
   { key: '85-100', label: '85-100¢', min: 85, max: 100 },
 ] as const;
 
+const WIN_RATE_CACHE_STORAGE_KEY = 'pm-win-rate-cache-v1';
+
+type WinRateCachePayload = {
+  winRateMap: Record<string, number | null>;
+  profileTradesMap: Record<string, ClosedTrade[]>;
+};
+
+const readWinRateCache = (): WinRateCachePayload | null => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.localStorage.getItem(WIN_RATE_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<WinRateCachePayload>;
+
+    return {
+      winRateMap: parsed.winRateMap && typeof parsed.winRateMap === 'object' ? parsed.winRateMap : {},
+      profileTradesMap: parsed.profileTradesMap && typeof parsed.profileTradesMap === 'object' ? parsed.profileTradesMap : {},
+    };
+  } catch {
+    return null;
+  }
+};
+
 const buildWinRateBuckets = (trades: ClosedTrade[]): WinRateBucket[] => {
   const buckets = WIN_RATE_BUCKETS.map((bucket) => ({ ...bucket, wonCount: 0, lostCount: 0 }));
 
@@ -128,10 +152,16 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [eventsMap, setEventsMap] = useState<Record<string, WalletTrackerEvent[]>>({});
   const [sortColumn, setSortColumn] = useState<SortColumn>(DEFAULT_SORT.column);
   const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_SORT.direction);
-  const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>({});
-  const [winRateLoadingMap, setWinRateLoadingMap] = useState<Record<string, boolean>>({});
-  const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>({});
+  const [winRateMap, setWinRateMap] = useState<Record<string, number | null>>(() => readWinRateCache()?.winRateMap ?? {});
+  const [winRateStatusMap, setWinRateStatusMap] = useState<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
+  const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>(() => readWinRateCache()?.profileTradesMap ?? {});
   const [showWinRateList, setShowWinRateList] = useState(false);
+  const activeScrapeWalletRef = useRef<string | null>(null);
+  const winRateStatusRef = useRef<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
+
+  useEffect(() => {
+    winRateStatusRef.current = winRateStatusMap;
+  }, [winRateStatusMap]);
 
   const filtered = addresses.filter(a => {
     const matchCat = !selectedCategory || a.category === selectedCategory;
@@ -183,48 +213,101 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   }, [filtered, sortColumn, sortDirection, trackerMap, eventsMap, winRateMap]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const payload: WinRateCachePayload = { winRateMap, profileTradesMap };
+    window.localStorage.setItem(WIN_RATE_CACHE_STORAGE_KEY, JSON.stringify(payload));
+  }, [winRateMap, profileTradesMap]);
+
+  useEffect(() => {
     let active = true;
-    const requestTokenMap: Record<string, number> = {};
-    let tokenCounter = 0;
 
-    const loadWinRates = async () => {
-      const withProfile = addresses.filter((address) => !!address.profileUrl);
-      if (withProfile.length === 0) return;
-
-      await Promise.allSettled(withProfile.map(async (addr) => {
-        if (!active || !addr.profileUrl) return;
-        const key = addr.address.toLowerCase();
-        const token = ++tokenCounter;
-        requestTokenMap[key] = token;
-
-        setWinRateLoadingMap((prev) => ({ ...prev, [key]: true }));
-        try {
-          const payload = await getProfileTrades(addr.profileUrl);
-          if (!active || requestTokenMap[key] !== token) return;
-
-          if (payload.loading || payload.trades.length === 0) {
-            setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
-          } else {
-            const won = payload.trades.filter((trade) => trade.closed_result === 'Won').length;
-            const rate = payload.trades.length > 0 ? (won / payload.trades.length) * 100 : null;
-            setWinRateMap((prev) => ({ ...prev, [key]: rate }));
-          }
-
-          setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
-        } catch {
-          if (!active || requestTokenMap[key] !== token) return;
-          setWinRateMap((prev) => ({ ...prev, [key]: prev[key] ?? null }));
-        } finally {
-          if (!active || requestTokenMap[key] !== token) return;
-          setWinRateLoadingMap((prev) => ({ ...prev, [key]: false }));
+    const syncStatuses = (keys: string[]) => {
+      const allowed = new Set(keys);
+      setWinRateStatusMap((prev) => {
+        const next: Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'> = {};
+        for (const key of keys) {
+          next[key] = prev[key] ?? 'beklemede';
         }
-      }));
+        return next;
+      });
+
+      if (activeScrapeWalletRef.current && !allowed.has(activeScrapeWalletRef.current)) {
+        activeScrapeWalletRef.current = null;
+      }
     };
 
-    void loadWinRates();
+    const processQueue = async () => {
+      const withProfile = addresses.filter((address) => !!address.profileUrl);
+      if (withProfile.length === 0) return;
+      const orderedKeys = withProfile.map((addr) => addr.address.toLowerCase());
+      syncStatuses(orderedKeys);
+
+      if (activeScrapeWalletRef.current === null) {
+        const nextWallet = withProfile.find((addr) => {
+          const key = addr.address.toLowerCase();
+          const status = winRateStatusRef.current[key] ?? 'beklemede';
+          return status !== 'tamamlandi' && status !== 'hata';
+        });
+
+        if (!nextWallet?.profileUrl) return;
+        activeScrapeWalletRef.current = nextWallet.address.toLowerCase();
+      }
+
+      const key = activeScrapeWalletRef.current;
+      if (!key) return;
+
+      const activeWallet = withProfile.find((addr) => addr.address.toLowerCase() === key);
+      if (!activeWallet?.profileUrl) {
+        activeScrapeWalletRef.current = null;
+        return;
+      }
+
+      setWinRateStatusMap((prev) => {
+        if (prev[key] === 'yükleniyor') return prev;
+        const next = { ...prev };
+        for (const walletKey of orderedKeys) {
+          if (!next[walletKey]) {
+            next[walletKey] = 'beklemede';
+          }
+          if (walletKey !== key && next[walletKey] === 'yükleniyor') {
+            next[walletKey] = 'beklemede';
+          }
+        }
+        next[key] = 'yükleniyor';
+        return next;
+      });
+
+      try {
+        const payload = await getProfileTrades(activeWallet.profileUrl);
+        if (!active) return;
+
+        setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
+
+        if (payload.loading || payload.isRefreshing) {
+          return;
+        }
+
+        if (payload.trades.length === 0) {
+          setWinRateMap((prev) => ({ ...prev, [key]: null }));
+        } else {
+          const won = payload.trades.filter((trade) => trade.closed_result === 'Won').length;
+          const rate = (won / payload.trades.length) * 100;
+          setWinRateMap((prev) => ({ ...prev, [key]: rate }));
+        }
+
+        setWinRateStatusMap((prev) => ({ ...prev, [key]: 'tamamlandi' }));
+        activeScrapeWalletRef.current = null;
+      } catch {
+        if (!active) return;
+        setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
+        activeScrapeWalletRef.current = null;
+      }
+    };
+
+    void processQueue();
     const intervalId = window.setInterval(() => {
-      void loadWinRates();
-    }, 60000);
+      void processQueue();
+    }, 3000);
 
     return () => {
       active = false;
@@ -453,11 +536,18 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                         {tracker?.eventCount ?? eventsMap[addr.address.toLowerCase()]?.length ?? 0}
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">
-                        {winRateLoadingMap[addr.address.toLowerCase()]
-                          ? 'Yükleniyor...'
-                          : (typeof winRateMap[addr.address.toLowerCase()] === 'number'
-                            ? `%${(winRateMap[addr.address.toLowerCase()] as number).toFixed(2)}`
-                            : '—')}
+                        {(() => {
+                          const key = addr.address.toLowerCase();
+                          const status = winRateStatusMap[key] ?? 'beklemede';
+                          const cachedRate = winRateMap[key];
+                          if (typeof cachedRate === 'number' && status !== 'tamamlandi') {
+                            return `%${cachedRate.toFixed(2)} (${status})`;
+                          }
+                          if (status === 'tamamlandi') {
+                            return typeof cachedRate === 'number' ? `%${cachedRate.toFixed(2)}` : 'tamamlandi';
+                          }
+                          return status;
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatLastActivity(latestEvent)}
@@ -519,6 +609,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               const key = addr.address.toLowerCase();
               const buckets = buildWinRateBuckets(profileTradesMap[key] ?? []);
               const winRateValue = winRateMap[key];
+              const status = winRateStatusMap[key] ?? 'beklemede';
 
               return (
                 <div key={addr.id} className="glass-card p-4">
@@ -528,9 +619,9 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
                     </div>
                     <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
-                      {winRateLoadingMap[key]
-                        ? 'Yükleniyor...'
-                        : (typeof winRateValue === 'number' ? `Win Rate: %${winRateValue.toFixed(2)}` : 'Win Rate: —')}
+                      {status === 'tamamlandi'
+                        ? (typeof winRateValue === 'number' ? `tamamlandi · Win Rate: %${winRateValue.toFixed(2)}` : 'tamamlandi')
+                        : (typeof winRateValue === 'number' ? `${status} · Eski Win Rate: %${winRateValue.toFixed(2)}` : status)}
                     </p>
                   </div>
 
