@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+release
+app_data
+tracked_wallets
+tracked_profiles

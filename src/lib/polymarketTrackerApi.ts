@@ -1,3 +1,6 @@
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+
 export type WalletTrackerEvent = {
   seen_at_utc: string;
   event_time?: string | null;
@@ -86,7 +89,7 @@ export type ProfileTradesResponse = {
 };
 
 export async function resolvePolymarketProfile(profileUrl: string): Promise<PolymarketProfileResponse> {
-  const response = await fetch('/api/tracker/profile', {
+  const response = await fetch(apiUrl('/api/tracker/profile'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profileUrl }),
@@ -99,7 +102,7 @@ export async function resolvePolymarketProfile(profileUrl: string): Promise<Poly
 }
 
 export async function startWalletTracking(address: string) {
-  const response = await fetch('/api/tracker/start', {
+  const response = await fetch(apiUrl('/api/tracker/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ address }),
@@ -112,7 +115,7 @@ export async function startWalletTracking(address: string) {
 }
 
 export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
-  const response = await fetch('/api/tracker/list', { cache: 'no-store' });
+  const response = await fetch(apiUrl('/api/tracker/list'), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Takip listesi okunamadı');
   }
@@ -121,7 +124,7 @@ export async function listTrackedWallets(): Promise<WalletTrackerInfo[]> {
 }
 
 export async function getWalletEventsWithStats(address: string): Promise<WalletEventsResponse> {
-  const response = await fetch(`/api/tracker/events/${address.toLowerCase()}`, { cache: 'no-store' });
+  const response = await fetch(apiUrl(`/api/tracker/events/${address.toLowerCase()}`), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Cüzdan eventleri alınamadı');
   }
@@ -144,11 +147,11 @@ export async function getWalletEvents(address: string): Promise<WalletTrackerEve
 }
 
 export async function stopWalletTracking(address: string) {
-  await fetch(`/api/tracker/${address.toLowerCase()}`, { method: 'DELETE' });
+  await fetch(apiUrl(`/api/tracker/${address.toLowerCase()}`), { method: 'DELETE' });
 }
 
 export async function requestCopytradeAdvisor(context: string): Promise<CopytradeAdvisorResponse> {
-  const response = await fetch('/api/tracker/copytrade-advisor', {
+  const response = await fetch(apiUrl('/api/tracker/copytrade-advisor'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ context }),
@@ -163,7 +166,7 @@ export async function requestCopytradeAdvisor(context: string): Promise<Copytrad
 }
 
 export async function getMarketQuote(market: string, outcome: string): Promise<MarketQuote> {
-  const response = await fetch(`/api/tracker/quote?market=${encodeURIComponent(market)}&outcome=${encodeURIComponent(outcome)}`, {
+  const response = await fetch(apiUrl(`/api/tracker/quote?market=${encodeURIComponent(market)}&outcome=${encodeURIComponent(outcome)}`), {
     cache: 'no-store',
   });
 
@@ -176,7 +179,7 @@ export async function getMarketQuote(market: string, outcome: string): Promise<M
 }
 
 export async function getProfileTrades(profileUrl: string): Promise<ProfileTradesResponse> {
-  const response = await fetch(`/api/tracker/profile-trades?profileUrl=${encodeURIComponent(profileUrl)}`, {
+  const response = await fetch(apiUrl(`/api/tracker/profile-trades?profileUrl=${encodeURIComponent(profileUrl)}`), {
     cache: 'no-store',
   });
 
