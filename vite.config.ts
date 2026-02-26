@@ -153,7 +153,10 @@ const parseClosedTrade = (value: unknown): ClosedTrade | null => {
   };
 };
 
-const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> => {
+const runScraperForProfile = async (
+  profileUrl: string,
+  options?: { showBrowser?: boolean; profileDir?: string },
+): Promise<ClosedTrade[]> => {
   const safeUrl = profileUrl.trim();
   if (!safeUrl) throw new Error("profileUrl is required");
 
@@ -162,12 +165,20 @@ const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> 
   const candidates = ["python3", "python"] as const;
   let lastError = "Scraper command failed";
 
-  fs.mkdirSync(SCRAPER_PROFILE_DIR, { recursive: true });
+  const profileDir = (options?.profileDir ?? SCRAPER_PROFILE_DIR).trim();
+  const showBrowser = Boolean(options?.showBrowser);
+
+  fs.mkdirSync(profileDir, { recursive: true });
 
   for (const bin of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", SCRAPER_PROFILE_DIR], {
+        const scraperArgs = [SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", profileDir];
+        if (showBrowser) {
+          scraperArgs.push("--show-browser");
+        }
+
+        const child = spawn(bin, scraperArgs, {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -225,11 +236,18 @@ const readCachedProfileTrades = (username: string): ClosedTrade[] => {
   return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
 };
 
-const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
+const scheduleProfileTradesRefresh = (
+  username: string,
+  profileUrl: string,
+  options?: { showBrowser?: boolean },
+) => {
   if (profileTradeJobs.has(username)) return;
 
   const job = Promise.resolve().then(async () => {
-    await runScraperForProfile(profileUrl);
+    await runScraperForProfile(profileUrl, {
+      showBrowser: options?.showBrowser,
+      profileDir: path.resolve(process.cwd(), "browser_profiles", username),
+    });
   }).catch(() => {
     // no-op: endpoint response should continue serving cache/loading state
   }).finally(() => {
@@ -251,7 +269,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
 
   if (!hasFile) {
     if (!hasRunningJob) {
-      scheduleProfileTradesRefresh(username, safeUrl);
+      scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: true });
     }
 
     return {
@@ -268,7 +286,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
   const ageMs = Date.now() - stat.mtimeMs;
   const stale = ageMs >= PROFILE_TRADES_REFRESH_MS;
   if (stale && !hasRunningJob) {
-    scheduleProfileTradesRefresh(username, safeUrl);
+    scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: false });
   }
 
   return {
