@@ -85,7 +85,13 @@ interface DashboardContextType {
 
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined);
 
-const DEFAULT_CATEGORIES = ['Whales', 'Smart Money', 'Market Makers', 'Influencers', 'DeFi Protocols'];
+const DEFAULT_CATEGORIES = ['Weather', 'Elon Musk', 'Crypto', 'Politic', 'Sport'];
+const LEGACY_DEFAULT_CATEGORIES = ['Whales', 'Smart Money', 'Market Makers', 'Influencers', 'DeFi Protocols'];
+
+const getInitialCategories = (persistedCategories: string[]): string[] => {
+  const customCategories = persistedCategories.filter((category) => !LEGACY_DEFAULT_CATEGORIES.includes(category));
+  return [...new Set([...DEFAULT_CATEGORIES, ...customCategories])];
+};
 const DASHBOARD_STORAGE_KEY = 'pm-dashboard-state-v1';
 
 type DashboardPersistedState = {
@@ -142,8 +148,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     const persisted = readPersistedDashboardState();
     if (!persisted) return DEFAULT_CATEGORIES;
 
-    const merged = [...new Set([...DEFAULT_CATEGORIES, ...persisted.categories])];
-    return merged;
+    return getInitialCategories(persisted.categories);
   });
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([]);
   const [paperBudget, setPaperBudgetState] = useState<PaperBudget>({
