@@ -85,7 +85,7 @@ interface DashboardContextType {
 
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined);
 
-const DEFAULT_CATEGORIES = ['Whales', 'Smart Money', 'Market Makers', 'Influencers', 'DeFi Protocols'];
+const DEFAULT_CATEGORIES = ['Weather', 'Elon Musk', 'Crypto', 'Politic', 'Sport'];
 const DASHBOARD_STORAGE_KEY = 'pm-dashboard-state-v1';
 
 type DashboardPersistedState = {
