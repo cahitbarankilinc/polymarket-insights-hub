@@ -156,20 +156,21 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [winRateStatusMap, setWinRateStatusMap] = useState<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
   const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>(() => readWinRateCache()?.profileTradesMap ?? {});
   const [showWinRateList, setShowWinRateList] = useState(false);
-  const [browserModeMap, setBrowserModeMap] = useState<Record<string, boolean>>({});
+  const [profileTradeErrorMap, setProfileTradeErrorMap] = useState<Record<string, string | null>>({});
   const activeScrapeWalletRef = useRef<string | null>(null);
   const winRateStatusRef = useRef<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
 
-  const toggleBrowserMode = async (profileUrl: string, key: string) => {
-    const next = !browserModeMap[key];
-    setBrowserModeMap((prev) => ({ ...prev, [key]: next }));
-
+  const refreshProfileTradesInBackground = async (profileUrl: string, key: string) => {
     try {
-      await getProfileTrades(profileUrl, { forceRefresh: true, showBrowser: next });
-      toast.success(next ? 'Chrome penceresi açılıyor. Giriş yapabilirsiniz.' : 'Browser görünümü kapatıldı, scrape arka planda devam edecek.');
+      const payload = await getProfileTrades(profileUrl, { forceRefresh: true, showBrowser: false });
+      setProfileTradeErrorMap((prev) => ({ ...prev, [key]: payload.lastError ?? null }));
+      if (payload.lastError) {
+        toast.error(`Arka plan scrape hatası: ${payload.lastError}`);
+        return;
+      }
+      toast.success('Arka planda yenileme başlatıldı.');
     } catch (error) {
-      setBrowserModeMap((prev) => ({ ...prev, [key]: !next }));
-      toast.error(error instanceof Error ? error.message : 'Browser modu değiştirilemedi');
+      toast.error(error instanceof Error ? error.message : 'Arka plan yenileme başlatılamadı');
     }
   };
 
@@ -296,10 +297,13 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         if (!active) return;
 
         if (payload.lastError) {
+          setProfileTradeErrorMap((prev) => ({ ...prev, [key]: payload.lastError ?? null }));
           setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
           activeScrapeWalletRef.current = null;
           return;
         }
+
+        setProfileTradeErrorMap((prev) => ({ ...prev, [key]: null }));
 
         setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
 
@@ -630,6 +634,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               const buckets = buildWinRateBuckets(profileTradesMap[key] ?? []);
               const winRateValue = winRateMap[key];
               const status = winRateStatusMap[key] ?? 'beklemede';
+              const profileTradeError = profileTradeErrorMap[key];
 
               return (
                 <div key={addr.id} className="glass-card p-4">
@@ -641,11 +646,11 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => addr.profileUrl && void toggleBrowserMode(addr.profileUrl, key)}
+                        onClick={() => addr.profileUrl && void refreshProfileTradesInBackground(addr.profileUrl, key)}
                         disabled={!addr.profileUrl}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${browserModeMap[key] ? 'bg-primary/15 text-primary border-primary/40' : 'bg-secondary/40 text-muted-foreground border-border/40 hover:text-foreground'}`}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all bg-secondary/40 text-muted-foreground border-border/40 hover:text-foreground"
                       >
-                        {browserModeMap[key] ? 'Chrome Açık (Canlı)' : 'Chrome Aç/Kapat'}
+                        Arka Planda Yenile
                       </button>
                       <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
                         {status === 'tamamlandi'
@@ -654,6 +659,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       </p>
                     </div>
                   </div>
+
+                  {profileTradeError && (
+                    <p className="text-xs text-destructive mb-3">
+                      Son scraper hatası: {profileTradeError}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
                     {buckets.map((bucket) => {

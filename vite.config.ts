@@ -15,7 +15,9 @@ const PROFILE_TRADES_ROOT = path.resolve(process.cwd(), "tracked_profiles");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scrapernew.py");
 const SCRAPER_PROFILE_DIR = (process.env.POLYMARKET_SCRAPER_PROFILE_DIR ?? path.resolve(process.cwd(), "browser_profiles", "default")).trim();
+const SHARED_SCRAPER_PROFILE_DIR = SCRAPER_PROFILE_DIR;
 const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
+const SCRAPER_MAX_RUN_MS = Number(process.env.POLYMARKET_SCRAPER_TIMEOUT_MS ?? 180000);
 const OPENAI_MODEL = "gpt-5-mini-2025-08-07";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "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";
 const OPENAI_SYSTEM_INSTRUCTIONS = `Sen bir “Polymarket trade kopyalama analiz motoru”sun. Görevin sadece ANALİZ ve ÖZET üretmektir.
@@ -110,12 +112,33 @@ type TrackerRuntime = {
 
 const runtimes = new Map<string, TrackerRuntime>();
 const profileTradeJobs = new Map<string, Promise<void>>();
+const profileTradeJobModes = new Map<string, boolean>();
+const profileTradePendingBrowser = new Set<string>();
 const profileTradeErrors = new Map<string, string>();
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
-const PYTHON_COMMAND_CANDIDATES: ReadonlyArray<readonly [string, ...string[]]> = process.platform === "win32"
-  ? [["py", "-3"], ["python"], ["python3"]]
+const DEFAULT_PYTHON_COMMAND_CANDIDATES: ReadonlyArray<readonly [string, ...string[]]> = process.platform === "win32"
+  ? [["py", "-3"], ["py"], ["python"], ["python3"]]
   : [["python3"], ["python"]];
+
+const isUsablePythonCommand = (candidate: readonly [string, ...string[]]) => {
+  const [bin, ...args] = candidate;
+  const probe = spawnSync(bin, [...args, "--version"], { stdio: "pipe" });
+  return probe.status === 0;
+};
+
+const PYTHON_COMMAND_CANDIDATES: ReadonlyArray<readonly [string, ...string[]]> = (() => {
+  const fromEnvRaw = (process.env.POLYMARKET_PYTHON_CMD ?? "").trim();
+  if (fromEnvRaw) {
+    const parts = fromEnvRaw.split(/\s+/).filter(Boolean);
+    if (parts.length > 0) {
+      return [parts as [string, ...string[]]];
+    }
+  }
+
+  const usable = DEFAULT_PYTHON_COMMAND_CANDIDATES.filter(isUsablePythonCommand);
+  return usable.length > 0 ? usable : DEFAULT_PYTHON_COMMAND_CANDIDATES;
+})();
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -168,6 +191,7 @@ const runScraperForProfile = async (
   const username = parseProfileUsername(safeUrl);
   const outputPath = profileTradesPath(username);
   let lastError = "Scraper command failed";
+  const candidateErrors: string[] = [];
 
   const profileDir = (options?.profileDir ?? SCRAPER_PROFILE_DIR).trim();
   const showBrowser = Boolean(options?.showBrowser);
@@ -186,10 +210,33 @@ const runScraperForProfile = async (
         const child = spawn(bin, scraperArgs, {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: process.env.PYTHONIOENCODING || "utf-8",
+            PYTHONUTF8: process.env.PYTHONUTF8 || "1",
+          },
         });
 
         let stderr = "";
         let stdout = "";
+        let timedOut = false;
+
+        const timeoutId = setTimeout(() => {
+          timedOut = true;
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            // noop
+          }
+
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // noop
+            }
+          }, 1500);
+        }, SCRAPER_MAX_RUN_MS);
 
         child.stdout.on("data", (chunk) => {
           stdout += chunk.toString();
@@ -199,19 +246,33 @@ const runScraperForProfile = async (
         });
 
         child.on("error", (error) => {
+          clearTimeout(timeoutId);
           reject(error);
         });
 
         child.on("close", (code) => {
-          if (code === 0) {
+          clearTimeout(timeoutId);
+
+          if (code === 0 && !timedOut) {
             resolve();
             return;
           }
-          reject(new Error((stderr || stdout || `${bin} exited with ${code}`).trim()));
+
+          const stderrTail = stderr.trim().split(/\r?\n/).slice(-8).join("\n");
+          const stdoutTail = stdout.trim().split(/\r?\n/).slice(-8).join("\n");
+          const fallback = `${bin} exited with ${code}`;
+          if (timedOut) {
+            reject(new Error(`Scraper ${SCRAPER_MAX_RUN_MS}ms timeout. stdout/stderr tail:\n${stderrTail || stdoutTail || fallback}`.trim()));
+            return;
+          }
+
+          reject(new Error((stderrTail || stdoutTail || fallback).trim()));
         });
       });
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      lastError = message;
+      candidateErrors.push(`${bin} ${baseArgs.join(" ")}`.trim() + ` => ${message}`);
       continue;
     }
 
@@ -231,7 +292,7 @@ const runScraperForProfile = async (
     return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
   }
 
-  throw new Error(lastError);
+  throw new Error(candidateErrors.length > 0 ? candidateErrors.join("\n") : lastError);
 };
 
 const readCachedProfileTrades = (username: string): ClosedTrade[] => {
@@ -246,19 +307,34 @@ const scheduleProfileTradesRefresh = (
   profileUrl: string,
   options?: { showBrowser?: boolean },
 ) => {
-  if (profileTradeJobs.has(username)) return;
+  const requestedBrowserMode = Boolean(options?.showBrowser);
+  if (profileTradeJobs.has(username)) {
+    if (requestedBrowserMode && !profileTradeJobModes.get(username)) {
+      profileTradePendingBrowser.add(username);
+    }
+    return;
+  }
   profileTradeErrors.delete(username);
+  profileTradeJobModes.set(username, requestedBrowserMode);
 
   const job = Promise.resolve().then(async () => {
+    console.log(`[tracker] profile scrape start user=${username} showBrowser=${requestedBrowserMode}`);
     await runScraperForProfile(profileUrl, {
-      showBrowser: options?.showBrowser,
-      profileDir: path.resolve(process.cwd(), "browser_profiles", username),
+      showBrowser: requestedBrowserMode,
+      profileDir: SHARED_SCRAPER_PROFILE_DIR,
     });
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     profileTradeErrors.set(username, message);
+    console.error(`[tracker] profile scrape error user=${username}: ${message}`);
   }).finally(() => {
+    console.log(`[tracker] profile scrape end user=${username}`);
     profileTradeJobs.delete(username);
+    profileTradeJobModes.delete(username);
+
+    if (profileTradePendingBrowser.delete(username)) {
+      scheduleProfileTradesRefresh(username, profileUrl, { showBrowser: false });
+    }
   });
 
   profileTradeJobs.set(username, job);
@@ -279,13 +355,13 @@ const getProfileTradesPayload = (
   const forceRefresh = Boolean(options?.forceRefresh);
   const showBrowser = Boolean(options?.showBrowser);
 
-  if (forceRefresh && !hasRunningJob) {
+  if (forceRefresh) {
     scheduleProfileTradesRefresh(username, safeUrl, { showBrowser });
   }
 
   if (!hasFile) {
     if (!hasRunningJob) {
-      scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: true });
+      scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: false });
     }
 
     return {
@@ -579,7 +655,7 @@ const resolveProfileFromUrl = (profileUrl: string) => {
     return { ...parsed, proxyWallet };
   }
 
-  throw new Error(lastError);
+  throw new Error(candidateErrors.length > 0 ? candidateErrors.join("\n") : lastError);
 };
 
 const fetchEndpoint = async (url: string, address: string): Promise<RawEvent[]> => {
@@ -882,7 +958,8 @@ ${context}`;
         if (req.method === "DELETE" && req.url?.startsWith("/api/tracker/")) {
           const address = normalizeWallet(req.url.replace("/api/tracker/", "").split("?")[0]);
           stopTracker(address);
-          sendJson(200, { ok: true, address });
+          fs.rmSync(walletDir(address), { recursive: true, force: true });
+          sendJson(200, { ok: true, address, deletedPath: walletDir(address) });
           return;
         }
 
