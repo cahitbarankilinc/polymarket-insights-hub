@@ -281,6 +281,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         const payload = await getProfileTrades(activeWallet.profileUrl);
         if (!active) return;
 
+        if (payload.lastError) {
+          setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
+          activeScrapeWalletRef.current = null;
+          return;
+        }
+
         setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
 
         if (payload.loading || payload.isRefreshing) {

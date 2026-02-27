@@ -83,6 +83,7 @@ export type ProfileTradesResponse = {
   refreshedAt: string | null;
   loading: boolean;
   isRefreshing: boolean;
+  lastError?: string | null;
 };
 
 export async function resolvePolymarketProfile(profileUrl: string): Promise<PolymarketProfileResponse> {

@@ -94,6 +94,7 @@ type ProfileTradesPayload = {
   refreshedAt: string | null;
   loading: boolean;
   isRefreshing: boolean;
+  lastError: string | null;
 };
 
 type TrackerState = {
@@ -109,8 +110,12 @@ type TrackerRuntime = {
 
 const runtimes = new Map<string, TrackerRuntime>();
 const profileTradeJobs = new Map<string, Promise<void>>();
+const profileTradeErrors = new Map<string, string>();
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
+const PYTHON_COMMAND_CANDIDATES: ReadonlyArray<readonly [string, ...string[]]> = process.platform === "win32"
+  ? [["py", "-3"], ["python"], ["python3"]]
+  : [["python3"], ["python"]];
 
 const utcNowIso = () => new Date().toISOString();
 
@@ -153,21 +158,32 @@ const parseClosedTrade = (value: unknown): ClosedTrade | null => {
   };
 };
 
-const runScraperForProfile = async (profileUrl: string): Promise<ClosedTrade[]> => {
+const runScraperForProfile = async (
+  profileUrl: string,
+  options?: { showBrowser?: boolean; profileDir?: string },
+): Promise<ClosedTrade[]> => {
   const safeUrl = profileUrl.trim();
   if (!safeUrl) throw new Error("profileUrl is required");
 
   const username = parseProfileUsername(safeUrl);
   const outputPath = profileTradesPath(username);
-  const candidates = ["python3", "python"] as const;
   let lastError = "Scraper command failed";
 
-  fs.mkdirSync(SCRAPER_PROFILE_DIR, { recursive: true });
+  const profileDir = (options?.profileDir ?? SCRAPER_PROFILE_DIR).trim();
+  const showBrowser = Boolean(options?.showBrowser);
 
-  for (const bin of candidates) {
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  for (const candidate of PYTHON_COMMAND_CANDIDATES) {
+    const [bin, ...baseArgs] = candidate;
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, [SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", SCRAPER_PROFILE_DIR], {
+        const scraperArgs = [...baseArgs, SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", profileDir];
+        if (showBrowser) {
+          scraperArgs.push("--show-browser");
+        }
+
+        const child = spawn(bin, scraperArgs, {
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -225,13 +241,22 @@ const readCachedProfileTrades = (username: string): ClosedTrade[] => {
   return parsed.map(parseClosedTrade).filter((trade): trade is ClosedTrade => trade !== null);
 };
 
-const scheduleProfileTradesRefresh = (username: string, profileUrl: string) => {
+const scheduleProfileTradesRefresh = (
+  username: string,
+  profileUrl: string,
+  options?: { showBrowser?: boolean },
+) => {
   if (profileTradeJobs.has(username)) return;
+  profileTradeErrors.delete(username);
 
   const job = Promise.resolve().then(async () => {
-    await runScraperForProfile(profileUrl);
-  }).catch(() => {
-    // no-op: endpoint response should continue serving cache/loading state
+    await runScraperForProfile(profileUrl, {
+      showBrowser: options?.showBrowser,
+      profileDir: path.resolve(process.cwd(), "browser_profiles", username),
+    });
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    profileTradeErrors.set(username, message);
   }).finally(() => {
     profileTradeJobs.delete(username);
   });
@@ -251,7 +276,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
 
   if (!hasFile) {
     if (!hasRunningJob) {
-      scheduleProfileTradesRefresh(username, safeUrl);
+      scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: true });
     }
 
     return {
@@ -261,6 +286,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
       refreshedAt: null,
       loading: true,
       isRefreshing: true,
+      lastError: profileTradeErrors.get(username) ?? null,
     };
   }
 
@@ -268,7 +294,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
   const ageMs = Date.now() - stat.mtimeMs;
   const stale = ageMs >= PROFILE_TRADES_REFRESH_MS;
   if (stale && !hasRunningJob) {
-    scheduleProfileTradesRefresh(username, safeUrl);
+    scheduleProfileTradesRefresh(username, safeUrl, { showBrowser: false });
   }
 
   return {
@@ -278,6 +304,7 @@ const getProfileTradesPayload = (profileUrl: string): ProfileTradesPayload => {
     refreshedAt: stat.mtime.toISOString(),
     loading: false,
     isRefreshing: stale || hasRunningJob,
+    lastError: profileTradeErrors.get(username) ?? null,
   };
 };
 
@@ -514,11 +541,11 @@ const resolveProfileFromUrl = (profileUrl: string) => {
     throw new Error("profileUrl is required");
   }
 
-  const candidates = ["python3", "python"] as const;
   let lastError = "Python command failed";
 
-  for (const bin of candidates) {
-    const result = spawnSync(bin, [PROFILE_SCRIPT_PATH, safeUrl], { encoding: "utf-8" });
+  for (const candidate of PYTHON_COMMAND_CANDIDATES) {
+    const [bin, ...baseArgs] = candidate;
+    const result = spawnSync(bin, [...baseArgs, PROFILE_SCRIPT_PATH, safeUrl], { encoding: "utf-8" });
     if (result.error) {
       lastError = result.error.message;
       continue;
@@ -744,6 +771,7 @@ const createPolymarketTrackerPlugin = (): Plugin => ({
             refreshedAt: payload.refreshedAt,
             loading: payload.loading,
             isRefreshing: payload.isRefreshing,
+            lastError: payload.lastError,
           });
           return;
         }
