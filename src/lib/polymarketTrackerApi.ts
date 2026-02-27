@@ -83,6 +83,7 @@ export type ProfileTradesResponse = {
   refreshedAt: string | null;
   loading: boolean;
   isRefreshing: boolean;
+  lastError?: string | null;
 };
 
 export async function resolvePolymarketProfile(profileUrl: string): Promise<PolymarketProfileResponse> {
@@ -175,8 +176,15 @@ export async function getMarketQuote(market: string, outcome: string): Promise<M
   return response.json() as Promise<MarketQuote>;
 }
 
-export async function getProfileTrades(profileUrl: string): Promise<ProfileTradesResponse> {
-  const response = await fetch(`/api/tracker/profile-trades?profileUrl=${encodeURIComponent(profileUrl)}`, {
+export async function getProfileTrades(
+  profileUrl: string,
+  options?: { forceRefresh?: boolean; showBrowser?: boolean },
+): Promise<ProfileTradesResponse> {
+  const params = new URLSearchParams({ profileUrl });
+  if (options?.forceRefresh) params.set('forceRefresh', '1');
+  if (options?.showBrowser) params.set('showBrowser', '1');
+
+  const response = await fetch(`/api/tracker/profile-trades?${params.toString()}`, {
     cache: 'no-store',
   });
 

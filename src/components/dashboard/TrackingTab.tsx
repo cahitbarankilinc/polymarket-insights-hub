@@ -156,8 +156,22 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [winRateStatusMap, setWinRateStatusMap] = useState<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
   const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>(() => readWinRateCache()?.profileTradesMap ?? {});
   const [showWinRateList, setShowWinRateList] = useState(false);
+  const [browserModeMap, setBrowserModeMap] = useState<Record<string, boolean>>({});
   const activeScrapeWalletRef = useRef<string | null>(null);
   const winRateStatusRef = useRef<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
+
+  const toggleBrowserMode = async (profileUrl: string, key: string) => {
+    const next = !browserModeMap[key];
+    setBrowserModeMap((prev) => ({ ...prev, [key]: next }));
+
+    try {
+      await getProfileTrades(profileUrl, { forceRefresh: true, showBrowser: next });
+      toast.success(next ? 'Chrome penceresi açılıyor. Giriş yapabilirsiniz.' : 'Browser görünümü kapatıldı, scrape arka planda devam edecek.');
+    } catch (error) {
+      setBrowserModeMap((prev) => ({ ...prev, [key]: !next }));
+      toast.error(error instanceof Error ? error.message : 'Browser modu değiştirilemedi');
+    }
+  };
 
   useEffect(() => {
     winRateStatusRef.current = winRateStatusMap;
@@ -280,6 +294,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
       try {
         const payload = await getProfileTrades(activeWallet.profileUrl);
         if (!active) return;
+
+        if (payload.lastError) {
+          setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
+          activeScrapeWalletRef.current = null;
+          return;
+        }
 
         setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
 
@@ -618,11 +638,21 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       <p className="text-sm font-semibold text-foreground">{addr.username || addr.label || `${addr.address.slice(0, 6)}...${addr.address.slice(-4)}`}</p>
                       <p className="font-mono text-xs text-muted-foreground truncate">{addr.address}</p>
                     </div>
-                    <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
-                      {status === 'tamamlandi'
-                        ? (typeof winRateValue === 'number' ? `tamamlandi · Win Rate: %${winRateValue.toFixed(2)}` : 'tamamlandi')
-                        : (typeof winRateValue === 'number' ? `${status} · Eski Win Rate: %${winRateValue.toFixed(2)}` : status)}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => addr.profileUrl && void toggleBrowserMode(addr.profileUrl, key)}
+                        disabled={!addr.profileUrl}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${browserModeMap[key] ? 'bg-primary/15 text-primary border-primary/40' : 'bg-secondary/40 text-muted-foreground border-border/40 hover:text-foreground'}`}
+                      >
+                        {browserModeMap[key] ? 'Chrome Açık (Canlı)' : 'Chrome Aç/Kapat'}
+                      </button>
+                      <p className="text-sm font-semibold text-primary min-w-[95px] text-right">
+                        {status === 'tamamlandi'
+                          ? (typeof winRateValue === 'number' ? `tamamlandi · Win Rate: %${winRateValue.toFixed(2)}` : 'tamamlandi')
+                          : (typeof winRateValue === 'number' ? `${status} · Eski Win Rate: %${winRateValue.toFixed(2)}` : status)}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
