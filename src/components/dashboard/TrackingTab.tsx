@@ -157,6 +157,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
   const [profileTradesMap, setProfileTradesMap] = useState<Record<string, ClosedTrade[]>>(() => readWinRateCache()?.profileTradesMap ?? {});
   const [showWinRateList, setShowWinRateList] = useState(false);
   const [browserModeMap, setBrowserModeMap] = useState<Record<string, boolean>>({});
+  const [profileTradeErrorMap, setProfileTradeErrorMap] = useState<Record<string, string | null>>({});
   const activeScrapeWalletRef = useRef<string | null>(null);
   const winRateStatusRef = useRef<Record<string, 'beklemede' | 'yükleniyor' | 'hata' | 'tamamlandi'>>({});
 
@@ -165,7 +166,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
     setBrowserModeMap((prev) => ({ ...prev, [key]: next }));
 
     try {
-      await getProfileTrades(profileUrl, { forceRefresh: true, showBrowser: next });
+      const payload = await getProfileTrades(profileUrl, { forceRefresh: true, showBrowser: next });
+      setProfileTradeErrorMap((prev) => ({ ...prev, [key]: payload.lastError ?? null }));
+      if (payload.lastError) {
+        toast.error(`Chrome modu tetiklendi ama scraper hata verdi: ${payload.lastError}`);
+        return;
+      }
       toast.success(next ? 'Chrome penceresi açılıyor. Giriş yapabilirsiniz.' : 'Browser görünümü kapatıldı, scrape arka planda devam edecek.');
     } catch (error) {
       setBrowserModeMap((prev) => ({ ...prev, [key]: !next }));
@@ -296,10 +302,13 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
         if (!active) return;
 
         if (payload.lastError) {
+          setProfileTradeErrorMap((prev) => ({ ...prev, [key]: payload.lastError ?? null }));
           setWinRateStatusMap((prev) => ({ ...prev, [key]: 'hata' }));
           activeScrapeWalletRef.current = null;
           return;
         }
+
+        setProfileTradeErrorMap((prev) => ({ ...prev, [key]: null }));
 
         setProfileTradesMap((prev) => ({ ...prev, [key]: payload.trades }));
 
@@ -630,6 +639,7 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
               const buckets = buildWinRateBuckets(profileTradesMap[key] ?? []);
               const winRateValue = winRateMap[key];
               const status = winRateStatusMap[key] ?? 'beklemede';
+              const profileTradeError = profileTradeErrorMap[key];
 
               return (
                 <div key={addr.id} className="glass-card p-4">
@@ -654,6 +664,12 @@ export default function TrackingTab({ onPaperTrade }: { onPaperTrade: (id: strin
                       </p>
                     </div>
                   </div>
+
+                  {profileTradeError && (
+                    <p className="text-xs text-destructive mb-3">
+                      Son scraper hatası: {profileTradeError}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
                     {buckets.map((bucket) => {
