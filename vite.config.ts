@@ -110,6 +110,8 @@ type TrackerRuntime = {
 
 const runtimes = new Map<string, TrackerRuntime>();
 const profileTradeJobs = new Map<string, Promise<void>>();
+const profileTradeJobModes = new Map<string, boolean>();
+const profileTradePendingBrowser = new Set<string>();
 const profileTradeErrors = new Map<string, string>();
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
@@ -246,12 +248,19 @@ const scheduleProfileTradesRefresh = (
   profileUrl: string,
   options?: { showBrowser?: boolean },
 ) => {
-  if (profileTradeJobs.has(username)) return;
+  const requestedBrowserMode = Boolean(options?.showBrowser);
+  if (profileTradeJobs.has(username)) {
+    if (requestedBrowserMode && !profileTradeJobModes.get(username)) {
+      profileTradePendingBrowser.add(username);
+    }
+    return;
+  }
   profileTradeErrors.delete(username);
+  profileTradeJobModes.set(username, requestedBrowserMode);
 
   const job = Promise.resolve().then(async () => {
     await runScraperForProfile(profileUrl, {
-      showBrowser: options?.showBrowser,
+      showBrowser: requestedBrowserMode,
       profileDir: path.resolve(process.cwd(), "browser_profiles", username),
     });
   }).catch((error) => {
@@ -259,6 +268,11 @@ const scheduleProfileTradesRefresh = (
     profileTradeErrors.set(username, message);
   }).finally(() => {
     profileTradeJobs.delete(username);
+    profileTradeJobModes.delete(username);
+
+    if (profileTradePendingBrowser.delete(username)) {
+      scheduleProfileTradesRefresh(username, profileUrl, { showBrowser: true });
+    }
   });
 
   profileTradeJobs.set(username, job);
@@ -279,7 +293,7 @@ const getProfileTradesPayload = (
   const forceRefresh = Boolean(options?.forceRefresh);
   const showBrowser = Boolean(options?.showBrowser);
 
-  if (forceRefresh && !hasRunningJob) {
+  if (forceRefresh) {
     scheduleProfileTradesRefresh(username, safeUrl, { showBrowser });
   }
 
