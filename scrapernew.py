@@ -91,13 +91,39 @@ def get_primary_page(context):
     return page
 
 
-def has_valid_session(p, profile_dir, target_url):
+def build_launch_kwargs(profile_dir, chrome_user_data_dir=None, chrome_profile_name=None):
+    """
+    Varsayılan olarak local otomasyon profili kullanır.
+    İstenirse gerçek Chrome user-data/profile ile açar (örn: Baran).
+    """
+    if chrome_user_data_dir:
+        args = []
+        if chrome_profile_name:
+            args.append(f"--profile-directory={chrome_profile_name}")
+        return {
+            "user_data_dir": chrome_user_data_dir,
+            "channel": "chrome",
+            "args": args,
+        }
+
+    return {"user_data_dir": profile_dir}
+
+
+def has_valid_session(
+    p, profile_dir, target_url, chrome_user_data_dir=None, chrome_profile_name=None
+):
     """
     Headless şekilde session kontrolü.
     Polymarket'te balance alanı geç render olabildiği için birkaç saniye boyunca tekrar dener.
     """
+    launch_kwargs = build_launch_kwargs(
+        profile_dir,
+        chrome_user_data_dir=chrome_user_data_dir,
+        chrome_profile_name=chrome_profile_name,
+    )
+
     check_context = p.chromium.launch_persistent_context(
-        user_data_dir=profile_dir,
+        **launch_kwargs,
         headless=True,  # ✅ hiç pencere açma
         viewport={"width": 1280, "height": 800},
     )
@@ -123,9 +149,17 @@ def has_valid_session(p, profile_dir, target_url):
             pass
 
 
-def ensure_login(p, profile_dir, target_url):
+def ensure_login(
+    p, profile_dir, target_url, chrome_user_data_dir=None, chrome_profile_name=None
+):
+    launch_kwargs = build_launch_kwargs(
+        profile_dir,
+        chrome_user_data_dir=chrome_user_data_dir,
+        chrome_profile_name=chrome_profile_name,
+    )
+
     login_context = p.chromium.launch_persistent_context(
-        user_data_dir=profile_dir,
+        **launch_kwargs,
         headless=False,
         viewport={"width": 1280, "height": 800},
         slow_mo=150,
@@ -139,10 +173,17 @@ def ensure_login(p, profile_dir, target_url):
         page.wait_for_timeout(3000)
         return login_context
 
+    print("Oturum kapalı görünüyor. Login için yeni sekme açılıyor...")
+
+    login_page = login_context.new_page()
+    login_page.goto("https://polymarket.com/", wait_until="domcontentloaded")
+    login_page.bring_to_front()
+
     print(
-        "Oturum kapalı görünüyor. Lütfen açılan tek Chrome penceresinde wallet ile giriş yapın."
+        "Lütfen yeni açılan sekmede wallet login yapın. Login sonrası scraping aynı pencerede arka planda devam edecek."
     )
-    page.wait_for_function(
+
+    login_page.wait_for_function(
         """
         (selector) => {
             const el = document.querySelector(selector);
@@ -155,12 +196,27 @@ def ensure_login(p, profile_dir, target_url):
         timeout=0,
     )
 
+    try:
+        login_page.close()
+    except Exception:
+        pass
+
+    page.bring_to_front()
+    page.goto(target_url, wait_until="domcontentloaded")
+
     print("Login tamam. 3 saniye sonra scraping başlayacak...")
     page.wait_for_timeout(3000)
     return login_context
 
 
-def parse_polymarket_profile(url, profile_dir, show_browser=False, debug_dir=None):
+def parse_polymarket_profile(
+    url,
+    profile_dir,
+    show_browser=False,
+    debug_dir=None,
+    chrome_user_data_dir=None,
+    chrome_profile_name=None,
+):
     parsed_items = []  # ✅ sırayla kayıt için liste
     seen_keys = set()  # ✅ tekrarları engellemek için
     debug_root = Path(debug_dir) if debug_dir else None
@@ -183,17 +239,35 @@ def parse_polymarket_profile(url, profile_dir, show_browser=False, debug_dir=Non
 
         # 1) Eğer session varsa direkt aç, yoksa login yaptır (aynı profil ile)
         # ✅ Varsayılan: session varsa headless (penceresiz). Sadece login yoksa pencere aç.
-        session_ok = has_valid_session(p, profile_dir=profile_dir, target_url=url)
+        session_ok = has_valid_session(
+            p,
+            profile_dir=profile_dir,
+            target_url=url,
+            chrome_user_data_dir=chrome_user_data_dir,
+            chrome_profile_name=chrome_profile_name,
+        )
+
+        launch_kwargs = build_launch_kwargs(
+            profile_dir,
+            chrome_user_data_dir=chrome_user_data_dir,
+            chrome_profile_name=chrome_profile_name,
+        )
 
         if session_ok:
             context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
+                **launch_kwargs,
                 headless=(not show_browser),  # --show-browser verirsen görünür
                 viewport={"width": 1280, "height": 800},
             )
         else:
             # ✅ Login için görünür aç (zorunlu)
-            context = ensure_login(p, profile_dir=profile_dir, target_url=url)
+            context = ensure_login(
+                p,
+                profile_dir=profile_dir,
+                target_url=url,
+                chrome_user_data_dir=chrome_user_data_dir,
+                chrome_profile_name=chrome_profile_name,
+            )
 
             # ✅ Login tamamlandıktan sonra scraping'i penceresiz yapmak için:
             try:
@@ -202,7 +276,7 @@ def parse_polymarket_profile(url, profile_dir, show_browser=False, debug_dir=Non
                 pass
 
             context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
+                **launch_kwargs,
                 headless=(not show_browser),
                 viewport={"width": 1280, "height": 800},
             )
@@ -454,6 +528,16 @@ def parse_args():
         default="",
         help="Kalıcı Chrome profil klasörü. Boş bırakılırsa ./browser_profiles/<username> kullanılır",
     )
+    parser.add_argument(
+        "--chrome-user-data-dir",
+        default=os.environ.get("POLYMARKET_CHROME_USER_DATA_DIR", ""),
+        help="Gerçek Chrome user data dizini (örn ~/.config/google-chrome)",
+    )
+    parser.add_argument(
+        "--chrome-profile-name",
+        default=os.environ.get("POLYMARKET_CHROME_PROFILE_NAME", "Baran"),
+        help="Chrome profil adı (örn: Baran, Default, Profile 1)",
+    )
     return parser.parse_args()
 
 
@@ -484,7 +568,11 @@ if __name__ == "__main__":
 
     profile_dir = args.profile_dir or str(Path("browser_profiles") / username)
     os.makedirs(profile_dir, exist_ok=True)
-    print(f"Kullanılacak Chrome profili: {profile_dir}")
+    print(f"Kullanılacak otomasyon profili: {profile_dir}")
+    if args.chrome_user_data_dir:
+        print(
+            f"Gerçek Chrome profili kullanılacak: user_data_dir={args.chrome_user_data_dir}, profile={args.chrome_profile_name}"
+        )
 
     # Kodu çalıştır
     json_data = parse_polymarket_profile(
@@ -492,6 +580,8 @@ if __name__ == "__main__":
         profile_dir=profile_dir,
         show_browser=args.show_browser,
         debug_dir=args.debug_dir or None,
+        chrome_user_data_dir=args.chrome_user_data_dir or None,
+        chrome_profile_name=args.chrome_profile_name or None,
     )
 
     data_list = json.loads(json_data)

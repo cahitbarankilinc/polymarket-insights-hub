@@ -15,6 +15,8 @@ const PROFILE_TRADES_ROOT = path.resolve(process.cwd(), "tracked_profiles");
 const PROFILE_SCRIPT_PATH = path.resolve(process.cwd(), "polymarket_profile_extract.py");
 const SCRAPER_SCRIPT_PATH = path.resolve(process.cwd(), "scrapernew.py");
 const SCRAPER_PROFILE_DIR = (process.env.POLYMARKET_SCRAPER_PROFILE_DIR ?? path.resolve(process.cwd(), "browser_profiles", "default")).trim();
+const SCRAPER_CHROME_USER_DATA_DIR = (process.env.POLYMARKET_CHROME_USER_DATA_DIR ?? "").trim();
+const SCRAPER_CHROME_PROFILE_NAME = (process.env.POLYMARKET_CHROME_PROFILE_NAME ?? "Baran").trim();
 const SHARED_SCRAPER_PROFILE_DIR = SCRAPER_PROFILE_DIR;
 const PROFILE_TRADES_REFRESH_MS = 60 * 60 * 1000;
 const SCRAPER_MAX_RUN_MS = Number(process.env.POLYMARKET_SCRAPER_TIMEOUT_MS ?? 180000);
@@ -203,6 +205,12 @@ const runScraperForProfile = async (
     try {
       await new Promise<void>((resolve, reject) => {
         const scraperArgs = [...baseArgs, SCRAPER_SCRIPT_PATH, safeUrl, "--profile-dir", profileDir];
+        if (SCRAPER_CHROME_USER_DATA_DIR) {
+          scraperArgs.push("--chrome-user-data-dir", SCRAPER_CHROME_USER_DATA_DIR);
+          if (SCRAPER_CHROME_PROFILE_NAME) {
+            scraperArgs.push("--chrome-profile-name", SCRAPER_CHROME_PROFILE_NAME);
+          }
+        }
         if (showBrowser) {
           scraperArgs.push("--show-browser");
         }

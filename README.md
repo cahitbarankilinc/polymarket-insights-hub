@@ -72,3 +72,14 @@ npm run dev
 ```
 
 Sonra arayüzden `➕ Adres Ekle` tabında bir `0x...` adresi ekleyin; takip sonuçlarını `Takip Listesi` içinde görebilirsiniz.
+
+### Scraper için mevcut Chrome profili kullanımı (Baran)
+
+Wallet scrape sırasında mevcut login oturumunu kullanmak için aşağıdaki env değişkenlerini set edebilirsiniz:
+
+```sh
+export POLYMARKET_CHROME_USER_DATA_DIR="$HOME/.config/google-chrome"
+export POLYMARKET_CHROME_PROFILE_NAME="Baran"
+```
+
+Bu ayar aktifken scraper login gerekiyorsa yeni bir sekme açar; login tamamlandıktan sonra scraping arka planda devam eder.
