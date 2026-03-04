@@ -16,6 +16,42 @@ TABLE_CONTAINER_SELECTOR = "#__pm_layout > div > div.flex.flex-col > div > div.m
 ROW_SELECTOR = f"{TABLE_CONTAINER_SELECTOR} div[data-index]"
 
 
+LOGIN_UI_RETRY_LIMIT = 4
+LOGIN_UI_RETRY_WAIT_MS = 4000
+LOGIN_CONFIRM_TIMEOUT_MS = 180000
+
+
+def has_auth_cta(page) -> bool:
+    ctas = page.get_by_role("button", name=re.compile(r"Log In|Sign In|Sign Up", re.IGNORECASE))
+    return ctas.count() > 0 and ctas.first.is_visible()
+
+
+def wait_for_auth_ui(page, max_wait_ms: int = 25000) -> str:
+    """Polymarket auth UI skeleton durumda kalırsa sonsuza dek beklemeyi engeller."""
+    for attempt in range(LOGIN_UI_RETRY_LIMIT):
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=max_wait_ms)
+        except Exception:
+            pass
+
+        waited = 0
+        while waited < max_wait_ms:
+            if is_logged_in(page):
+                return "logged_in"
+            if has_auth_cta(page) or is_logged_out(page):
+                return "logged_out"
+            page.wait_for_timeout(250)
+            waited += 250
+
+        if attempt < LOGIN_UI_RETRY_LIMIT - 1:
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_timeout(LOGIN_UI_RETRY_WAIT_MS)
+
+    raise RuntimeError(
+        "Polymarket auth UI yüklenemedi. Chrome profil çakışması/extension engeli olabilir."
+    )
+
+
 def is_logged_out(page) -> bool:
     """
     Logout ise navbar'da 'Sign Up' görünür.
@@ -168,7 +204,7 @@ def ensure_login(
     page = get_primary_page(login_context)
     page.goto(target_url, wait_until="domcontentloaded")
 
-    if is_logged_in(page):
+    if wait_for_auth_ui(page) == "logged_in":
         print("Oturum zaten açık. 3 saniye sonra scraping başlayacak...")
         page.wait_for_timeout(3000)
         return login_context
@@ -178,6 +214,7 @@ def ensure_login(
     login_page = login_context.new_page()
     login_page.goto("https://polymarket.com/", wait_until="domcontentloaded")
     login_page.bring_to_front()
+    wait_for_auth_ui(login_page)
 
     print(
         "Lütfen yeni açılan sekmede wallet login yapın. Login sonrası scraping aynı pencerede arka planda devam edecek."
@@ -189,11 +226,11 @@ def ensure_login(
             const el = document.querySelector(selector);
             if (!el) return false;
             const txt = (el.textContent || '').trim();
-            return /\\$\\s*\\d+(?:[.,]\\d+)?/.test(txt);
+            return /\$\s*\d+(?:[.,]\d+)?/.test(txt);
         }
         """,
         arg=BALANCE_SELECTOR,
-        timeout=0,
+        timeout=LOGIN_CONFIRM_TIMEOUT_MS,
     )
 
     try:
@@ -357,7 +394,7 @@ def parse_polymarket_profile(
             # ✅ Satırlar bu container içinde; ama scroll window'da
             page.wait_for_selector(TABLE_CONTAINER_SELECTOR, timeout=15000)
 
-            TARGET_COUNT = 500
+            TARGET_COUNT = 250
             print(
                 f"Toplaya toplaya kaydırma başlıyor. {TARGET_COUNT} işleme ulaşınca duracak..."
             )
@@ -366,7 +403,7 @@ def parse_polymarket_profile(
             prev_len = 0
             seen_fps = set()
 
-            for step in range(8000):
+            for step in range(2500):
                 if step % 10 == 0 and is_logged_out(page):
                     raise RuntimeError(
                         "Scrape sırasında logout oldun (Sign Up göründü)."
@@ -469,7 +506,7 @@ def parse_polymarket_profile(
                     stale_rounds = 0
                 prev_len = len(parsed_items)
 
-                if stale_rounds >= 80:
+                if stale_rounds >= 40:
                     print(
                         f"Yeni satır gelmiyor. Toplam {len(parsed_items)} işlemde duruldu."
                     )

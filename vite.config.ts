@@ -117,6 +117,7 @@ const profileTradeJobs = new Map<string, Promise<void>>();
 const profileTradeJobModes = new Map<string, boolean>();
 const profileTradePendingBrowser = new Set<string>();
 const profileTradeErrors = new Map<string, string>();
+let profileTradeScrapeQueue: Promise<void> = Promise.resolve();
 const quoteCache = new Map<string, { expiresAt: number; value: MarketQuote | null }>();
 const QUOTE_TTL_MS = 1500;
 const DEFAULT_PYTHON_COMMAND_CANDIDATES: ReadonlyArray<readonly [string, ...string[]]> = process.platform === "win32"
@@ -326,11 +327,19 @@ const scheduleProfileTradesRefresh = (
   profileTradeJobModes.set(username, requestedBrowserMode);
 
   const job = Promise.resolve().then(async () => {
-    console.log(`[tracker] profile scrape start user=${username} showBrowser=${requestedBrowserMode}`);
-    await runScraperForProfile(profileUrl, {
-      showBrowser: requestedBrowserMode,
-      profileDir: SHARED_SCRAPER_PROFILE_DIR,
-    });
+    profileTradeScrapeQueue = profileTradeScrapeQueue
+      .catch(() => {
+        // previous queued scrape failures should not block next jobs
+      })
+      .then(async () => {
+        console.log(`[tracker] profile scrape start user=${username} showBrowser=${requestedBrowserMode}`);
+        await runScraperForProfile(profileUrl, {
+          showBrowser: requestedBrowserMode,
+          profileDir: SHARED_SCRAPER_PROFILE_DIR,
+        });
+      });
+
+    await profileTradeScrapeQueue;
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     profileTradeErrors.set(username, message);
@@ -341,7 +350,7 @@ const scheduleProfileTradesRefresh = (
     profileTradeJobModes.delete(username);
 
     if (profileTradePendingBrowser.delete(username)) {
-      scheduleProfileTradesRefresh(username, profileUrl, { showBrowser: false });
+      scheduleProfileTradesRefresh(username, profileUrl, { showBrowser: true });
     }
   });
 
